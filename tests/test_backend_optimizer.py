@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core import OptimizerError, element_increment_kg_per_t, solve_alloy_cost, validate_config
-from app.main import app
+from app.main import app, load_runtime_config
 from app.solvers import get_solver
 
 
@@ -26,6 +26,24 @@ def test_api_config_returns_config_json():
     response = client.get("/api/config")
     assert response.status_code == 200
     assert response.json() == load_default_config()
+
+
+def test_runtime_config_contains_server_settings():
+    """发布形态必须由 config.json 控制监听地址和端口。"""
+
+    config = load_runtime_config()
+    assert config["server"]["host"] == "127.0.0.1"
+    assert isinstance(config["server"]["port"], int)
+
+
+def test_backend_serves_frontend_assets():
+    """单文件发布时后端必须自己托管页面和前端资源。"""
+
+    client = TestClient(app)
+    assert client.get("/").status_code == 200
+    assert client.get("/prototype.html").status_code == 200
+    assert client.get("/ui.js").status_code == 200
+    assert client.get("/config.json").status_code == 200
 
 
 def test_mass_balance_uses_divide_by_1000_factor():

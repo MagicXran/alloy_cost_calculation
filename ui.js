@@ -164,7 +164,7 @@
   function requestConfig() {
     var fetchImpl = window.fetch;
     if (typeof fetchImpl !== 'function') throw new Error('当前浏览器不支持 fetch，无法读取配置');
-    return fetchJson('config.json');
+    return fetchJson('/config.json');
   }
 
   function fetchJson(url) {
@@ -208,7 +208,7 @@
 
   function apiBaseUrl() {
     if (window.ALLOY_API_BASE_URL) return window.ALLOY_API_BASE_URL.replace(/\/$/, '');
-    return 'http://127.0.0.1:8017';
+    return '';
   }
 
   function apiErrorMessage(payload, statusCode) {

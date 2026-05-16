@@ -66,7 +66,7 @@ test('ui.js 调用后端 /api/optimize，不再调用浏览器离线求解器', 
   vm.runInNewContext(script, sandbox, { filename: 'ui.js' });
   const config = { heat_weight_t: 132.2 };
   const response = await sandbox.window.AlloyCostUI.requestOptimize(config);
-  assert.equal(captured.url, 'http://127.0.0.1:8017/api/optimize');
+  assert.equal(captured.url, '/api/optimize');
   assert.equal(JSON.parse(captured.options.body).solver, 'highs');
   assert.deepEqual(JSON.parse(captured.options.body).config, config);
   assert.equal(response.status, 'ok');
@@ -125,7 +125,7 @@ test('ui.js 从同源 config.json 读取运行时配置', async () => {
   };
   vm.runInNewContext(script, sandbox, { filename: 'ui.js' });
   const payload = await sandbox.window.AlloyCostUI.requestConfig();
-  assert.equal(captured, 'config.json');
+  assert.equal(captured, '/config.json');
   assert.equal(JSON.stringify(payload), JSON.stringify(config));
 });
 

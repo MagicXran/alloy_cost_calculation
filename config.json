@@ -1,4 +1,10 @@
 {
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8017,
+    "open_browser": true
+  },
+
   "heat_weight_t": 150,
   "steel_weight_kg": 1000,
 
