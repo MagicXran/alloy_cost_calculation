@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>热卷合金成本最优计算工具 - 精简原型</title>
+<link rel="icon" href="data:,">
+<style>
+  /* 设计令牌：按 DESIGN.md 的 Coinbase 风格重建，白底、蓝色单主色、弱阴影。 */
+  :root {
+    --primary: #0052ff;
+    --primary-active: #003ecc;
+    --ink: #0a0b0d;
+    --body: #5b616e;
+    --muted: #7c828a;
+    --hairline: #dee1e6;
+    --hairline-soft: #eef0f3;
+    --canvas: #ffffff;
+    --surface-soft: #f7f7f7;
+    --surface-strong: #eef0f3;
+    --surface-dark: #0a0b0d;
+    --surface-dark-elevated: #16181c;
+    --on-dark: #ffffff;
+    --on-dark-soft: #a8acb3;
+    --semantic-up: #05b169;
+    --semantic-down: #cf202f;
+    --accent-yellow: #f4b000;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 24px;
+    --radius-pill: 100px;
+    --mono: "Cascadia Code", "Consolas", "SFMono-Regular", monospace;
+    --sans: "Microsoft YaHei", "PingFang SC", "Segoe UI", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--canvas); color: var(--ink); font-family: var(--sans); line-height: 1.5; }
+  .hero { background: var(--surface-dark); color: var(--on-dark); padding: 34px 42px 30px; }
+  .hero-inner { display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 36px; max-width: 1440px; margin: 0 auto; align-items: end; }
+  .eyebrow { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 16px; padding: 6px 12px; border: 1px solid rgba(255,255,255,.18); border-radius: var(--radius-pill); color: var(--on-dark-soft); font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+  h1 { margin: 0; max-width: 760px; font-size: clamp(34px, 4.2vw, 60px); font-weight: 400; line-height: 1.04; letter-spacing: -1.4px; }
+  .hero-copy { max-width: 700px; margin: 16px 0 0; color: var(--on-dark-soft); font-size: 15px; }
+  .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+  .button { border: 0; border-radius: var(--radius-pill); padding: 12px 20px; min-height: 44px; font: 600 15px/1.15 var(--sans); cursor: pointer; }
+  .button-primary { background: var(--primary); color: #fff; }
+  .button-primary:hover { background: var(--primary-active); }
+  .button-secondary { background: var(--surface-dark-elevated); color: var(--on-dark); border: 1px solid rgba(255,255,255,.18); }
+  .hero-card { background: var(--surface-dark-elevated); border: 1px solid rgba(255,255,255,.08); border-radius: var(--radius-xl); padding: 24px; }
+  .hero-card-label { color: var(--on-dark-soft); font-size: 13px; }
+  .hero-card-value { margin-top: 4px; font-family: var(--mono); font-size: 38px; font-weight: 600; letter-spacing: -1px; }
+  .hero-card-sub { margin-top: 8px; color: var(--on-dark-soft); font-size: 13px; }
+  .shell { max-width: 1440px; margin: 0 auto; padding: 28px 42px 40px; }
+  .workspace { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 22px; align-items: start; }
+  .panel { background: var(--canvas); border: 1px solid var(--hairline); border-radius: var(--radius-xl); overflow: hidden; }
+  .panel-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 18px 20px; border-bottom: 1px solid var(--hairline-soft); }
+  .panel-title { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.1px; }
+  .panel-subtitle { margin-top: 3px; color: var(--body); font-size: 13px; }
+  .panel-body { padding: 18px 20px 20px; }
+  .badge { display: inline-flex; align-items: center; padding: 5px 10px; border-radius: var(--radius-pill); background: var(--surface-strong); color: var(--ink); font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .badge-blue { background: rgba(0,82,255,.1); color: var(--primary); }
+  .badge-green { background: rgba(5,177,105,.1); color: var(--semantic-up); }
+  .badge-yellow { background: rgba(244,176,0,.14); color: #8a6300; }
+  .input-panel { position: sticky; top: 18px; }
+  .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .field-grid.single { grid-template-columns: 1fr; }
+  .field { display: grid; gap: 5px; }
+  label { color: var(--body); font-size: 12px; font-weight: 600; }
+  input { width: 100%; height: 42px; border: 1px solid var(--hairline); border-radius: var(--radius-md); padding: 10px 12px; color: var(--ink); background: var(--canvas); font-family: var(--mono); font-size: 13px; }
+  input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+  .section-label { margin: 20px 0 10px; color: var(--ink); font-size: 13px; font-weight: 700; }
+  details { margin-top: 18px; border-top: 1px solid var(--hairline-soft); padding-top: 14px; }
+  summary { cursor: pointer; color: var(--primary); font-size: 13px; font-weight: 700; }
+  .alloy-list { display: grid; gap: 8px; margin-top: 12px; }
+  .alloy-row { display: grid; grid-template-columns: 20px 1fr auto auto; gap: 10px; align-items: center; padding: 10px; background: var(--surface-soft); border-radius: var(--radius-md); font-size: 13px; }
+  .alloy-row > input[type="checkbox"] { width: 18px; height: 18px; padding: 0; }
+  .alloy-field { display: flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--body); font-size: 12px; }
+  .alloy-field .compact-input { width: 80px; height: 32px; border: 1px solid var(--hairline); border-radius: var(--radius-md); padding: 4px 8px; font-family: var(--mono); font-size: 12px; color: var(--ink); background: var(--canvas); }
+  .alloy-field .compact-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+  .alloy-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .alloy-price { color: var(--body); font-family: var(--mono); }
+  .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .summary-card { min-height: 118px; padding: 16px; border: 1px solid var(--hairline-soft); border-radius: var(--radius-lg); background: var(--surface-soft); }
+  .summary-label { color: var(--body); font-size: 12px; font-weight: 600; }
+  .summary-value { margin-top: 8px; font-family: var(--mono); font-size: 28px; font-weight: 650; line-height: 1.1; letter-spacing: -.6px; }
+  .summary-unit { color: var(--muted); font-size: 13px; font-weight: 500; }
+  .summary-sub { margin-top: 8px; color: var(--body); font-size: 12px; }
+  .text-up { color: var(--semantic-up); }
+  .text-down { color: var(--semantic-down); }
+  .result-board { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(340px, .9fr); gap: 16px; margin-top: 16px; }
+  .subpanel { border: 1px solid var(--hairline); border-radius: var(--radius-xl); background: var(--canvas); overflow: hidden; }
+  .subpanel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--hairline-soft); }
+  .subpanel-title { margin: 0; font-size: 15px; font-weight: 700; }
+  .subpanel-body { padding: 14px 16px 16px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 13px; }
+  th { padding: 9px 8px; color: var(--body); background: var(--surface-soft); border-bottom: 1px solid var(--hairline); text-align: right; white-space: nowrap; font-weight: 700; }
+  th:first-child, td:first-child { text-align: left; }
+  td { padding: 9px 8px; border-bottom: 1px solid var(--hairline-soft); text-align: right; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  .row-summary td { border-top: 1px solid var(--hairline); background: var(--surface-soft); font-weight: 700; }
+  .muted { color: var(--muted); }
+  .chem-list { display: grid; gap: 11px; }
+  .chem-row { display: grid; grid-template-columns: 42px 1fr 54px; gap: 10px; align-items: center; }
+  .chem-name { font-weight: 800; }
+  .chem-range { height: 9px; border-radius: var(--radius-pill); background: var(--surface-strong); overflow: hidden; }
+  .chem-fill { display: block; height: 100%; border-radius: var(--radius-pill); background: var(--primary); }
+  .chem-value { text-align: right; font-family: var(--mono); font-size: 12px; }
+  .chem-note { margin-top: 12px; color: var(--body); font-size: 12px; }
+  .sequence { display: grid; grid-template-columns: repeat(6, minmax(108px, 1fr)); gap: 8px; }
+  .step { min-height: 100px; padding: 11px; border-radius: var(--radius-lg); background: var(--surface-soft); border: 1px solid var(--hairline-soft); }
+  .step-index { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; margin-bottom: 8px; border-radius: 50%; background: var(--primary); color: #fff; font-family: var(--mono); font-size: 12px; font-weight: 700; }
+  .step-name { font-size: 13px; font-weight: 800; }
+  .step-dose { margin-top: 5px; font-family: var(--mono); font-size: 12px; }
+  .step-note { margin-top: 4px; color: var(--body); font-size: 12px; }
+  .quality-strip { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 16px; padding: 12px 14px; border: 1px solid rgba(244,176,0,.35); border-radius: var(--radius-lg); background: rgba(244,176,0,.08); color: #6f5000; font-size: 13px; }
+  .prototype-banner { margin-top: 18px; padding: 14px 16px; border: 1px dashed var(--hairline); border-radius: var(--radius-lg); color: var(--body); background: var(--surface-soft); font-size: 13px; text-align: center; }
+  @media (max-width: 1180px) { .hero-inner, .workspace, .result-board { grid-template-columns: 1fr; } .input-panel { position: static; } .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 720px) { .hero { padding: 28px 18px; } .shell { padding: 18px; } .summary-grid, .field-grid, .sequence { grid-template-columns: 1fr; } .alloy-row { grid-template-columns: 20px 1fr; } .alloy-field { margin-top: 4px; } .hero-card-value { font-size: 32px; } }
+</style>
+</head>
+<body>
+<header class="hero">
+  <div class="hero-inner">
+    <div>
+      <div class="eyebrow">MILP alloy optimizer · offline calculator</div>
+      <h1>热卷合金成本最优计算工具</h1>
+      <p class="hero-copy">用 LP 理论下限、MILP 整袋投料和经验方案做同屏对比；现场先看成本、成分是否合格、投料顺序，别再被五个大区块拖着翻页面。</p>
+      <div class="hero-actions">
+        <button class="button button-primary" onclick="requestSolveOffline()">开始求解</button>
+        <button class="button button-secondary" onclick="toggleDetails()">展开/收起合金参数</button>
+      </div>
+    </div>
+    <aside class="hero-card" aria-label="当前推荐方案摘要">
+      <div class="hero-card-label">推荐方案吨钢成本</div>
+      <div class="hero-card-value" id="heroCost">174.8 <span class="summary-unit">¥/t</span></div>
+      <div class="hero-card-sub" id="heroCostSub">MILP 整袋约束后，每炉约 ¥23,121；相对经验方案节约 ¥1,546/炉。</div>
+    </aside>
+  </div>
+</header>
+<main class="shell">
+  <div class="workspace">
+    <section class="panel input-panel" aria-label="输入参数">
+      <div class="panel-header"><div><h2 class="panel-title">输入参数</h2><div class="panel-subtitle">手工录入，离线求解</div></div><span class="badge badge-blue" id="heatWeightBadge">132.2 t</span></div>
+      <div class="panel-body">
+        <div class="field-grid single"><div class="field"><label for="heatWeight">炉次重量 t</label><input id="heatWeight" type="number" value="132.2" step="0.1"></div></div>
+        <div class="section-label">残余成分 %</div>
+        <div class="field-grid">
+          <div class="field"><label for="resC">C</label><input id="resC" type="number" value="0.040" step="0.001"></div><div class="field"><label for="resSi">Si</label><input id="resSi" type="number" value="0.000" step="0.001"></div><div class="field"><label for="resMn">Mn</label><input id="resMn" type="number" value="0.080" step="0.001"></div><div class="field"><label for="resCr">Cr</label><input id="resCr" type="number" value="0.000" step="0.001"></div><div class="field"><label for="resP">P</label><input id="resP" type="number" value="0.008" step="0.001"></div><div class="field"><label for="resS">S</label><input id="resS" type="number" value="0.008" step="0.001"></div>
+        </div>
+        <div class="section-label">目标范围 %</div>
+        <div class="field-grid">
+          <div class="field"><label for="cMin">C min</label><input id="cMin" type="number" value="0.06" step="0.01"></div><div class="field"><label for="cMax">C max</label><input id="cMax" type="number" value="0.10" step="0.01"></div><div class="field"><label for="siMin">Si min</label><input id="siMin" type="number" value="0.15" step="0.01"></div><div class="field"><label for="siMax">Si max</label><input id="siMax" type="number" value="0.25" step="0.01"></div><div class="field"><label for="mnMin">Mn min</label><input id="mnMin" type="number" value="1.10" step="0.01"></div><div class="field"><label for="mnMax">Mn max</label><input id="mnMax" type="number" value="1.30" step="0.01"></div><div class="field"><label for="crMin">Cr min</label><input id="crMin" type="number" value="0.35" step="0.01"></div><div class="field"><label for="crMax">Cr max</label><input id="crMax" type="number" value="0.45" step="0.01"></div><div class="field"><label for="pMax">P max</label><input id="pMax" type="number" value="0.025" step="0.001"></div><div class="field"><label for="sMax">S max</label><input id="sMax" type="number" value="0.020" step="0.001"></div>
+        </div>
+        <details id="alloyDetails"><summary>7 种合金参数</summary><div class="alloy-list" id="alloyList" aria-label="合金启用和价格"><label class="alloy-row"><input type="checkbox" checked><span>硅锰</span><span class="alloy-price">5088 ¥/t</span></label><label class="alloy-row"><input type="checkbox" checked><span>高碳锰铁</span><span class="alloy-price">5593 ¥/t</span></label><label class="alloy-row"><input type="checkbox"><span>中碳锰铁</span><span class="alloy-price">6500 ¥/t</span></label><label class="alloy-row"><input type="checkbox" checked><span>低碳锰铁</span><span class="alloy-price">8200 ¥/t</span></label><label class="alloy-row"><input type="checkbox" checked><span>硅铁</span><span class="alloy-price">6100 ¥/t</span></label><label class="alloy-row"><input type="checkbox" checked><span>高碳铬铁</span><span class="alloy-price">8500 ¥/t</span></label><label class="alloy-row"><input type="checkbox" checked><span>低碳铬铁</span><span class="alloy-price">11800 ¥/t</span></label></div></details>
+      </div>
+    </section>
+    <section class="panel" aria-label="求解输出">
+      <div class="panel-header"><div><h2 class="panel-title">输出总览</h2><div class="panel-subtitle">推荐看 MILP；LP 是理论下限，不是现场投料单。</div></div><span class="badge badge-green">全部成分合格</span></div>
+      <div class="panel-body">
+        <div class="summary-grid" id="summaryGrid" aria-label="关键指标"><div class="summary-card"><div class="summary-label">吨钢合金成本</div><div class="summary-value">174.8 <span class="summary-unit">¥/t</span></div><div class="summary-sub">炉次成本 ¥23,121</div></div><div class="summary-card"><div class="summary-label">成本变化 vs经验</div><div class="summary-value text-up">-6.3 <span class="summary-unit">%</span></div><div class="summary-sub">每炉节约 ¥1,546</div></div><div class="summary-card"><div class="summary-label">总合金加入量</div><div class="summary-value">28.37 <span class="summary-unit">kg/t</span></div><div class="summary-sub">炉次合计 3,751 kg</div></div><div class="summary-card"><div class="summary-label">碳余量</div><div class="summary-value">0.022 <span class="summary-unit">%</span></div><div class="summary-sub">距 C 上限 0.100%</div></div></div>
+        <div class="result-board">
+          <section class="subpanel" aria-label="三方案对比"><div class="subpanel-head"><h3 class="subpanel-title">方案对比</h3><span class="badge badge-blue">MILP 推荐</span></div><div class="subpanel-body table-wrap"><table><thead><tr><th>合金 kg/t</th><th>经验</th><th>LP</th><th>MILP</th></tr></thead><tbody id="comparisonBody"><tr><td>硅锰</td><td>14.50</td><td>12.13</td><td>12.00</td></tr><tr><td>高碳锰铁</td><td>4.00</td><td>1.92</td><td>1.89</td></tr><tr><td>低碳锰铁</td><td>5.80</td><td>4.70</td><td>4.73</td></tr><tr><td>硅铁</td><td>1.20</td><td>1.02</td><td>1.00</td></tr><tr><td>高碳铬铁</td><td>5.80</td><td>5.43</td><td>5.50</td></tr><tr><td>低碳铬铁</td><td>2.34</td><td>3.21</td><td>3.25</td></tr><tr class="row-summary"><td>吨钢成本 ¥/t</td><td>186.5</td><td>172.3</td><td>174.8</td></tr><tr class="row-summary"><td>节约 vs经验</td><td class="muted">-</td><td class="text-up">-7.6%</td><td class="text-up">-6.3%</td></tr></tbody></table></div></section>
+          <section class="subpanel" aria-label="成分验证"><div class="subpanel-head"><h3 class="subpanel-title">成分校核</h3><span class="badge badge-green" id="chemBadge">6/6 OK</span></div><div class="subpanel-body"><div class="chem-list" id="chemList"><div class="chem-row"><span class="chem-name">C</span><span class="chem-range"><span class="chem-fill" style="width:68%"></span></span><span class="chem-value">0.078</span></div><div class="chem-row"><span class="chem-name">Si</span><span class="chem-range"><span class="chem-fill" style="width:45%"></span></span><span class="chem-value">0.195</span></div><div class="chem-row"><span class="chem-name">Mn</span><span class="chem-range"><span class="chem-fill" style="width:53%"></span></span><span class="chem-value">1.205</span></div><div class="chem-row"><span class="chem-name">Cr</span><span class="chem-range"><span class="chem-fill" style="width:52%"></span></span><span class="chem-value">0.402</span></div><div class="chem-row"><span class="chem-name">P</span><span class="chem-range"><span class="chem-fill" style="width:44%"></span></span><span class="chem-value">0.011</span></div><div class="chem-row"><span class="chem-name">S</span><span class="chem-range"><span class="chem-fill" style="width:45%"></span></span><span class="chem-value">0.009</span></div></div><div class=”chem-note”>进度条 = 值在有效范围内的相对位置，非绝对数值。贴近左端 = 踩下限，贴近右端 = 顶上限。</div></div></section>
+        </div>
+        <section class="subpanel" style="margin-top:16px" aria-label="推荐加入顺序"><div class="subpanel-head"><h3 class="subpanel-title">推荐加入顺序</h3><span class="badge badge-yellow">按现场投料阅读</span></div><div class="subpanel-body"><div class="sequence" id="sequenceList"><div class="step"><div class="step-index">1</div><div class="step-name">高碳铬铁</div><div class="step-dose">5.50 kg/t</div><div class="step-note">727.1 kg/炉</div></div><div class="step"><div class="step-index">2</div><div class="step-name">低碳铬铁</div><div class="step-dose">3.25 kg/t</div><div class="step-note">429.7 kg/炉</div></div><div class="step"><div class="step-index">3</div><div class="step-name">硅锰</div><div class="step-dose">12.00 kg/t</div><div class="step-note">1,586.4 kg/炉</div></div><div class="step"><div class="step-index">4</div><div class="step-name">高碳锰铁</div><div class="step-dose">1.89 kg/t</div><div class="step-note">10 袋</div></div><div class="step"><div class="step-index">5</div><div class="step-name">硅铁</div><div class="step-dose">1.00 kg/t</div><div class="step-note">132.2 kg/炉</div></div><div class="step"><div class="step-index">6</div><div class="step-name">低碳锰铁</div><div class="step-dose">4.73 kg/t</div><div class="step-note">25 袋</div></div></div></div></section>
+        <div class="quality-strip" id="qualityStrip"><strong>质控提醒</strong><span>温降估算 V1 暂不启用，等现场系数校准。</span><span>P/S 含量仍是默认值，正式使用必须允许化验单覆盖。</span></div>
+      </div>
+    </section>
+  </div>
+  <div class="prototype-banner" id="runStatus">离线计算模式：输入变更后请重新求解，结果不上传服务器。</div>
+</main>
+<script src="alloy_optimizer.js"></script>
+<script src="ui.js"></script>
+</body>
+</html>

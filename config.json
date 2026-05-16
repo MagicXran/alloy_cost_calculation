@@ -1,0 +1,121 @@
+{
+  "heat_weight_t": 132.2,
+  "steel_weight_kg": 1000,
+
+  "recovery_rates": {
+    "C": 0.90, "Si": 0.75, "Mn": 0.98, "Cr": 0.95,
+    "P": 1.0, "S": 1.0
+  },
+
+  "safety_margins": {
+    "C":  {"low": 0.000, "high": 0.005},
+    "Si": {"low": 0.010, "high": 0.010},
+    "Mn": {"low": 0.010, "high": 0.010},
+    "Cr": {"low": 0.005, "high": 0.005},
+    "P":  {"low": 0.000, "high": 0.002},
+    "S":  {"low": 0.000, "high": 0.002}
+  },
+
+  "alloys": [
+    {
+      "name": "硅锰",
+      "price_per_ton": 5088,
+      "composition": {"C": 1.72, "Si": 17.69, "Mn": 65.66, "P": 0.15, "S": 0.02},
+      "enabled": true,
+      "addition_sequence": 3,
+      "bag_size_kg": 0,
+      "max_add_kg_per_t": 30,
+      "recovery_overrides": {},
+      "notes": "脱氧+合金化"
+    },
+    {
+      "name": "高碳锰铁",
+      "price_per_ton": 5593,
+      "composition": {"C": 6.69, "Mn": 74.6, "P": 0.20, "S": 0.02},
+      "enabled": true,
+      "addition_sequence": 4,
+      "bag_size_kg": 25,
+      "max_add_kg_per_t": 25,
+      "recovery_overrides": {},
+      "notes": ""
+    },
+    {
+      "name": "中碳锰铁",
+      "price_per_ton": 7420,
+      "composition": {"C": 1.5, "Mn": 78.54, "P": 0.20, "S": 0.02},
+      "enabled": true,
+      "addition_sequence": 6,
+      "bag_size_kg": 25,
+      "max_add_kg_per_t": 25,
+      "recovery_overrides": {},
+      "notes": ""
+    },
+    {
+      "name": "低碳锰铁",
+      "price_per_ton": 7876,
+      "composition": {"C": 0.64, "Mn": 81.19, "P": 0.20, "S": 0.02},
+      "enabled": true,
+      "addition_sequence": 7,
+      "bag_size_kg": 25,
+      "max_add_kg_per_t": 25,
+      "recovery_overrides": {},
+      "notes": ""
+    },
+    {
+      "name": "硅铁",
+      "price_per_ton": 4973,
+      "composition": {"C": 0.2, "Si": 72.23, "P": 0.03, "S": 0.02},
+      "enabled": true,
+      "addition_sequence": 5,
+      "bag_size_kg": 0,
+      "max_add_kg_per_t": 20,
+      "recovery_overrides": {},
+      "notes": ""
+    },
+    {
+      "name": "高碳铬铁",
+      "price_per_ton": 7699,
+      "composition": {"C": 10.0, "Cr": 52.0, "P": 0.03, "S": 0.04},
+      "enabled": true,
+      "addition_sequence": 1,
+      "bag_size_kg": 0,
+      "max_add_kg_per_t": 20,
+      "recovery_overrides": {},
+      "notes": ""
+    },
+    {
+      "name": "低碳铬铁",
+      "price_per_ton": 14956,
+      "composition": {"C": 0.12, "Cr": 59.44, "P": 0.03, "S": 0.03},
+      "enabled": true,
+      "addition_sequence": 2,
+      "bag_size_kg": 0,
+      "max_add_kg_per_t": 20,
+      "recovery_overrides": {},
+      "notes": ""
+    }
+  ],
+
+  "target": {
+    "C":  {"min": 0.06, "max": 0.10},
+    "Si": {"min": 0.15, "max": 0.25},
+    "Mn": {"min": 1.10, "max": 1.30},
+    "Cr": {"min": 0.35, "max": 0.45},
+    "P":  {"max": 0.025},
+    "S":  {"max": 0.020}
+  },
+
+  "residual": {
+    "C": 0.04, "Si": 0.0, "Mn": 0.08, "Cr": 0.0,
+    "P": 0.008, "S": 0.008
+  },
+
+  "milp_settings": {
+    "default_bag_size_kg": 25,
+    "enable_bag_rounding": true
+  },
+
+  "temperature_drop": {
+    "enabled": false
+  }
+}
