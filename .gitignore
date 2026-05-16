@@ -1,3 +1,9 @@
 .playwright-mcp/
+.runlogs/
 node_modules/
 screenshot_*.png
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+~$*.pptx
