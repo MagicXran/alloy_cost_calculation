@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>热卷合金成本最优计算工具 - 精简原型</title>
+<title>热卷合金成本最优计算工具</title>
 <link rel="icon" href="data:,">
 <style>
   /* 设计令牌：按 DESIGN.md 的 Coinbase 风格重建，白底、蓝色单主色、弱阴影。 */
@@ -151,7 +151,7 @@
       <h1>热卷合金成本最优计算工具</h1>
       <p class="hero-copy">同屏对比规则基线、LP 理论下限与 MILP 整袋投料方案，优先呈现成本、成分校核与投料顺序。</p>
       <div class="hero-actions">
-        <button class="button button-primary" onclick="requestSolveRemote()">调用后端求解</button>
+        <button class="button button-primary" onclick="requestSolveRemote()">点击计算</button>
       </div>
     </div>
     <aside class="hero-card" aria-label="当前推荐方案摘要">
@@ -164,7 +164,7 @@
 <main class="shell">
   <div class="workspace">
     <section class="panel input-panel" aria-label="输入参数">
-      <div class="panel-header"><div><h2 class="panel-title">输入参数</h2><div class="panel-subtitle">手工录入，后端 FastAPI + HiGHS 求解</div></div><span class="badge badge-blue" id="heatWeightBadge">132.2 t</span></div>
+      <div class="panel-header"><div><h2 class="panel-title">输入参数</h2><div class="panel-subtitle"></div></div><span class="badge badge-blue" id="heatWeightBadge">132.2 t</span></div>
       <div class="panel-body">
         <div class="field-grid single"><div class="field"><label for="heatWeight">炉次重量 t</label><input id="heatWeight" type="number" value="132.2" step="0.1"></div></div>
         <div class="section-label">残余成分 %</div>

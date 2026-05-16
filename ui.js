@@ -1,36 +1,10 @@
 (function () {
   'use strict';
 
-  // 默认配置用于初始化表单；实际计算必须交给后端 API，不能在浏览器里跑一套影子模型。
-  var DEFAULT_CONFIG = {
-    heat_weight_t: 132.2,
-    steel_weight_kg: 1000,
-    recovery_rates: { C: 0.90, Si: 0.75, Mn: 0.98, Cr: 0.95, P: 1.0, S: 1.0 },
-    safety_margins: {
-      C: { low: 0.000, high: 0.005 }, Si: { low: 0.010, high: 0.010 },
-      Mn: { low: 0.010, high: 0.010 }, Cr: { low: 0.005, high: 0.005 },
-      P: { low: 0.000, high: 0.002 }, S: { low: 0.000, high: 0.002 }
-    },
-    alloys: [
-      { name: '硅锰', price_per_ton: 5088, composition: { C: 1.72, Si: 17.69, Mn: 65.66, P: 0.15, S: 0.02 }, enabled: true, addition_sequence: 3, bag_size_kg: 0, max_add_kg_per_t: 30, recovery_overrides: {}, notes: '脱氧+合金化' },
-      { name: '高碳锰铁', price_per_ton: 5593, composition: { C: 6.69, Mn: 74.6, P: 0.20, S: 0.02 }, enabled: true, addition_sequence: 4, bag_size_kg: 25, max_add_kg_per_t: 25, recovery_overrides: {}, notes: '' },
-      { name: '中碳锰铁', price_per_ton: 7420, composition: { C: 1.5, Mn: 78.54, P: 0.20, S: 0.02 }, enabled: true, addition_sequence: 6, bag_size_kg: 25, max_add_kg_per_t: 25, recovery_overrides: {}, notes: '' },
-      { name: '低碳锰铁', price_per_ton: 7876, composition: { C: 0.64, Mn: 81.19, P: 0.20, S: 0.02 }, enabled: true, addition_sequence: 7, bag_size_kg: 25, max_add_kg_per_t: 25, recovery_overrides: {}, notes: '' },
-      { name: '硅铁', price_per_ton: 4973, composition: { C: 0.2, Si: 72.23, P: 0.03, S: 0.02 }, enabled: true, addition_sequence: 5, bag_size_kg: 0, max_add_kg_per_t: 20, recovery_overrides: {}, notes: '' },
-      { name: '高碳铬铁', price_per_ton: 7699, composition: { C: 10.0, Cr: 52.0, P: 0.03, S: 0.04 }, enabled: true, addition_sequence: 1, bag_size_kg: 0, max_add_kg_per_t: 20, recovery_overrides: {}, notes: '' },
-      { name: '低碳铬铁', price_per_ton: 14956, composition: { C: 0.12, Cr: 59.44, P: 0.03, S: 0.03 }, enabled: true, addition_sequence: 2, bag_size_kg: 0, max_add_kg_per_t: 20, recovery_overrides: {}, notes: '' }
-    ],
-    target: {
-      C: { min: 0.06, max: 0.10 }, Si: { min: 0.15, max: 0.25 },
-      Mn: { min: 1.10, max: 1.30 }, Cr: { min: 0.35, max: 0.45 },
-      P: { max: 0.025 }, S: { max: 0.020 }
-    },
-    residual: { C: 0.04, Si: 0.0, Mn: 0.08, Cr: 0.0, P: 0.008, S: 0.008 },
-    milp_settings: { default_bag_size_kg: 25, enable_bag_rounding: true },
-    temperature_drop: { enabled: false }
-  };
+  // 运行时配置只允许来自后端 /api/config，避免前后端各维护一套默认合金数据。
+  var runtimeConfig = null;
 
-  // 简单深拷贝用于从默认配置派生用户输入配置，避免直接改全局默认值。
+  // 简单深拷贝用于从运行时配置派生用户输入配置，避免直接改全局配置。
   function clone(value) { return JSON.parse(JSON.stringify(value)); }
   function byId(id) { return document.getElementById(id); }
   var lastResult = null;
@@ -49,17 +23,51 @@
   }
   function fmt(value, digits) { return Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits }); }
 
-  // 首次加载时用配置渲染合金开关，计算数据保留在 JS 配置而不是 DOM 文本里。
+  // 首次加载时用运行时配置渲染合金开关，计算数据保留在配置对象而不是 DOM 文本里。
   function renderAlloyInputs() {
+    ensureConfigLoaded();
     var container = byId('alloyList');
-    container.innerHTML = DEFAULT_CONFIG.alloys.map(function (alloy, index) {
+    container.innerHTML = runtimeConfig.alloys.map(function (alloy, index) {
       var checked = alloy.enabled ? 'checked' : '';
-      var bag = alloy.bag_size_kg > 0 ? alloy.bag_size_kg : DEFAULT_CONFIG.milp_settings.default_bag_size_kg;
+      var bag = alloy.bag_size_kg > 0 ? alloy.bag_size_kg : runtimeConfig.milp_settings.default_bag_size_kg;
       var bagChecked = alloy.bag_size_kg > 0 ? 'checked' : '';
       var modeText = alloy.bag_size_kg > 0 ? '整袋' : '连续';
       return '<div class="alloy-row"><input type="checkbox" aria-label="启用' + alloy.name + '" data-alloy-index="' + index + '" ' + checked + '><span class="alloy-name">' + alloy.name + '</span><span class="alloy-controls"><label class="alloy-field"><span>¥/t</span><input class="compact-input" type="number" min="100" step="1" data-alloy-price-index="' + index + '" value="' + alloy.price_per_ton + '"></label><label class="switch-field"><input type="checkbox" data-alloy-bag-mode-index="' + index + '" ' + bagChecked + '><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-alloy-mode-text="' + index + '">' + modeText + '</span><span class="alloy-field bag-size-field" data-alloy-bag-field="' + index + '"><span>kg/袋</span><input class="compact-input" type="number" min="1" step="1" data-alloy-bag-index="' + index + '" value="' + bag + '"></span></label></span></div>';
     }).join('');
     syncBagModeLabels();
+  }
+
+  // 将 config.json 中的默认值回填到页面输入，避免 HTML value 成为第二套默认配置。
+  function applyConfigToForm(config) {
+    byId('heatWeight').value = config.heat_weight_t;
+    setElementValues('res', config.residual || {}, { C: 'C', Si: 'Si', Mn: 'Mn', Cr: 'Cr', P: 'P', S: 'S' });
+    setBoundValues(config.target || {});
+    var badge = byId('heatWeightBadge');
+    if (badge) badge.textContent = fmt(config.heat_weight_t, 1) + ' t';
+  }
+
+  function setElementValues(prefix, values, elementMap) {
+    Object.keys(elementMap).forEach(function (element) {
+      var input = byId(prefix + elementMap[element]);
+      if (input && values[element] !== undefined) input.value = values[element];
+    });
+  }
+
+  function setBoundValues(target) {
+    var fields = {
+      cMin: ['C', 'min'], cMax: ['C', 'max'], siMin: ['Si', 'min'], siMax: ['Si', 'max'],
+      mnMin: ['Mn', 'min'], mnMax: ['Mn', 'max'], crMin: ['Cr', 'min'], crMax: ['Cr', 'max'],
+      pMax: ['P', 'max'], sMax: ['S', 'max']
+    };
+    Object.keys(fields).forEach(function (id) {
+      var spec = fields[id];
+      var value = ((target[spec[0]] || {})[spec[1]]);
+      if (value !== undefined) byId(id).value = value;
+    });
+  }
+
+  function ensureConfigLoaded() {
+    if (!runtimeConfig) throw new Error('配置尚未从后端 /api/config 加载');
   }
 
   // 滑钮表达投料方式：关闭=连续投料，打开=按袋重做整数袋 MILP 约束。
@@ -77,7 +85,8 @@
 
   // 从页面输入生成求解配置，只允许用户改 V1 暴露的字段。
   function readInput() {
-    var config = clone(DEFAULT_CONFIG);
+    ensureConfigLoaded();
+    var config = clone(runtimeConfig);
     config.heat_weight_t = num('heatWeight');
     config.residual = { C: num('resC'), Si: num('resSi'), Mn: num('resMn'), Cr: num('resCr'), P: num('resP'), S: num('resS') };
     config.target = {
@@ -150,6 +159,51 @@
         return payload;
       });
     });
+  }
+
+  function requestConfig() {
+    var fetchImpl = window.fetch;
+    if (typeof fetchImpl !== 'function') throw new Error('当前浏览器不支持 fetch，无法读取配置');
+    return fetchJson('config.json');
+  }
+
+  function fetchJson(url) {
+    return window.fetch(url).then(function (response) {
+      return response.text().then(function (text) {
+        var payload = text ? JSON.parse(text) : {};
+        if (!response.ok) {
+          var error = new Error(apiErrorMessage(payload, response.status));
+          error.statusCode = response.status;
+          throw error;
+        }
+        return payload;
+      });
+    });
+  }
+
+  function initializeFromConfig() {
+    var status = byId('runStatus');
+    if (status) status.textContent = '正在从 config.json 读取配置。';
+    return requestConfig().then(function (config) {
+      runtimeConfig = config;
+      window.RUNTIME_CONFIG = runtimeConfig;
+      applyConfigToForm(runtimeConfig);
+      renderAlloyInputs();
+      document.addEventListener('change', function (event) {
+        if (event.target && event.target.matches('[data-alloy-bag-mode-index]')) syncBagModeLabels();
+      });
+      return solveRemote();
+    }).catch(function (error) {
+      if (status) {
+        status.textContent = '读取配置失败：' + error.message;
+        status.style.borderColor = 'rgba(207,32,47,.5)';
+      }
+    });
+  }
+
+  function setRuntimeConfigForTest(config) {
+    runtimeConfig = clone(config);
+    window.RUNTIME_CONFIG = runtimeConfig;
   }
 
   function apiBaseUrl() {
@@ -291,16 +345,11 @@
     setTimeout(solveRemote, 0);
   }
 
-  window.DEFAULT_CONFIG = DEFAULT_CONFIG;
-  window.AlloyCostUI = { readInput: readInput, readAlloyInputs: readAlloyInputs, percentInRange: percentInRange, syncBagModeLabels: syncBagModeLabels, activeBoundNote: activeBoundNote, effectiveBounds: effectiveBounds, requestOptimize: requestOptimize, apiBaseUrl: apiBaseUrl };
+  window.AlloyCostUI = { readInput: readInput, readAlloyInputs: readAlloyInputs, percentInRange: percentInRange, syncBagModeLabels: syncBagModeLabels, activeBoundNote: activeBoundNote, effectiveBounds: effectiveBounds, requestOptimize: requestOptimize, requestConfig: requestConfig, initializeFromConfig: initializeFromConfig, setRuntimeConfigForTest: setRuntimeConfigForTest, apiBaseUrl: apiBaseUrl };
   window.solveRemote = solveRemote;
   window.requestSolveRemote = requestSolveRemote;
   window.selectMode = selectMode;
   document.addEventListener('DOMContentLoaded', function () {
-    renderAlloyInputs();
-    document.addEventListener('change', function (event) {
-      if (event.target && event.target.matches('[data-alloy-bag-mode-index]')) syncBagModeLabels();
-    });
-    solveRemote();
+    initializeFromConfig();
   });
 })();

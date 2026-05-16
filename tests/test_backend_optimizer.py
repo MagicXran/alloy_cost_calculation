@@ -19,6 +19,15 @@ def load_default_config():
     return json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
 
 
+def test_api_config_returns_config_json():
+    """前端默认配置必须来自后端读取的 config.json，不能再维护影子配置。"""
+
+    client = TestClient(app)
+    response = client.get("/api/config")
+    assert response.status_code == 200
+    assert response.json() == load_default_config()
+
+
 def test_mass_balance_uses_divide_by_1000_factor():
     """质量平衡必须使用 /1000，不能退回旧的 /10000 错误。"""
 

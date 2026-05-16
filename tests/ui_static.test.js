@@ -7,7 +7,8 @@ test('prototype.html 只接入后端求解入口，不再加载离线求解脚�
   const html = fs.readFileSync(path.join(__dirname, '..', 'prototype.html'), 'utf8');
   assert.match(html, /<script src="ui\.js"><\/script>/);
   assert.match(html, /onclick="requestSolveRemote\(\)"/);
-  assert.match(html, /后端 FastAPI \+ HiGHS 求解/);
+  assert.match(html, /点击计算/);
+  assert.doesNotMatch(html, /手工录入，后端 FastAPI \+ HiGHS 求解/);
   assert.match(html, /backend calculator/);
   assert.doesNotMatch(html, /<script src="alloy_optimizer\.js"><\/script>/);
   assert.doesNotMatch(html, /offline calculator/);
@@ -94,16 +95,38 @@ test('页面支持点击选择三种方案并刷新对应加入顺序', () => {
   assert.doesNotMatch(script, /成本变化 vs经验|规则基线（经验）/);
 });
 
-test('ui.js 内嵌默认配置必须与 config.json 保持一致', () => {
+test('ui.js 不得再内嵌默认合金配置', () => {
   const vm = require('node:vm');
-  const htmlConfig = fs.readFileSync(path.join(__dirname, '..', 'ui.js'), 'utf8');
+  const script = fs.readFileSync(path.join(__dirname, '..', 'ui.js'), 'utf8');
   const sandbox = {
     window: {},
     document: { addEventListener() {}, getElementById() { return null; }, querySelectorAll() { return []; } },
   };
-  vm.runInNewContext(htmlConfig, sandbox, { filename: 'ui.js' });
+  vm.runInNewContext(script, sandbox, { filename: 'ui.js' });
+  assert.equal(sandbox.window.DEFAULT_CONFIG, undefined);
+  assert.match(script, /\/api\/config/);
+  assert.doesNotMatch(script, /var DEFAULT_CONFIG/);
+  assert.doesNotMatch(script, /composition:\s*\{/);
+});
+
+test('ui.js 从同源 config.json 读取运行时配置', async () => {
+  const vm = require('node:vm');
+  const script = fs.readFileSync(path.join(__dirname, '..', 'ui.js'), 'utf8');
   const config = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8'));
-  assert.equal(JSON.stringify(sandbox.window.DEFAULT_CONFIG), JSON.stringify(config));
+  let captured = null;
+  const sandbox = {
+    window: {
+      fetch(url) {
+        captured = url;
+        return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify(config)) });
+      }
+    },
+    document: { addEventListener() {}, getElementById() { return null; }, querySelectorAll() { return []; } },
+  };
+  vm.runInNewContext(script, sandbox, { filename: 'ui.js' });
+  const payload = await sandbox.window.AlloyCostUI.requestConfig();
+  assert.equal(captured, 'config.json');
+  assert.equal(JSON.stringify(payload), JSON.stringify(config));
 });
 
 test('ui.js 暴露可测试的 UI 纯函数', () => {
@@ -116,6 +139,7 @@ test('ui.js 暴露可测试的 UI 纯函数', () => {
   vm.runInNewContext(script, sandbox, { filename: 'ui.js' });
   assert.equal(typeof sandbox.window.AlloyCostUI.percentInRange, 'function');
   assert.equal(typeof sandbox.window.AlloyCostUI.readAlloyInputs, 'function');
+  assert.equal(typeof sandbox.window.AlloyCostUI.requestConfig, 'function');
   assert.equal(typeof sandbox.window.AlloyCostUI.activeBoundNote, 'function');
   assert.equal(typeof sandbox.window.selectMode, 'function');
 });
@@ -178,6 +202,7 @@ test('合金价格和袋重输入会写入求解配置', () => {
     },
   };
   vm.runInNewContext(script, sandbox, { filename: 'ui.js' });
+  sandbox.window.AlloyCostUI.setRuntimeConfigForTest(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8')));
   const config = sandbox.window.AlloyCostUI.readInput();
   assert.equal(config.alloys[1].price_per_ton, 6000);
   assert.equal(config.alloys[1].bag_size_kg, 50);
