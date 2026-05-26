@@ -68,12 +68,31 @@ def clone_config(config: dict[str, Any]) -> dict[str, Any]:
 def effective_bounds(config: dict[str, Any], element: str) -> dict[str, float | None]:
     """计算安全余量后的成分边界。"""
 
+    control = control_target_for(config, element)
+    if control is not None:
+        return {"min": None, "max": control}
+
     target = (config.get("target") or {}).get(element) or {}
     margin = (config.get("safety_margins") or {}).get(element) or {"low": 0, "high": 0}
     return {
         "min": None if "min" not in target else float(target["min"]) + float(margin.get("low") or 0),
         "max": None if "max" not in target else float(target["max"]) - float(margin.get("high") or 0),
     }
+
+
+def control_target_for(config: dict[str, Any], element: str) -> float | None:
+    """返回控元素扣除统一安全余量后的上限，未启用时返回 None。"""
+
+    control = config.get("control_targets") or {}
+    if control.get("enabled") is False:
+        return None
+    element_config = (control.get("elements") or {}).get(element) or {}
+    if element_config.get("enabled") is not True:
+        return None
+    if "value" not in element_config:
+        return None
+    margin = float(control.get("margin") or 0)
+    return float(element_config["value"]) - margin
 
 
 def alloy_coeff(alloy: dict[str, Any], element: str, config: dict[str, Any]) -> float:
@@ -119,6 +138,19 @@ def validate_config(config: dict[str, Any]) -> None:
         bounds = effective_bounds(config, element)
         if bounds["min"] is not None and bounds["max"] is not None and bounds["min"] > bounds["max"]:
             errors.append(f"{element} 安全余量导致有效上下限交叉")
+
+    control = config.get("control_targets") or {}
+    control_margin = number_or_throw(control.get("margin", 0), "control_targets.margin")
+    if control_margin < 0 or control_margin > 0.5:
+        errors.append("control_targets.margin 应在 0~0.5")
+    for element, element_config in (control.get("elements") or {}).items():
+        if (element_config or {}).get("enabled") is not True:
+            continue
+        value = number_or_throw((element_config or {}).get("value"), f"control_targets.{element}.value")
+        if value < 0 or value > 10:
+            errors.append(f"{element} 控制目标超过 0~10%，确认是否单位错误")
+        if value - control_margin < 0:
+            errors.append(f"{element} 控制目标扣除安全余量后不能小于 0")
 
     for alloy in config.get("alloys") or []:
         if alloy.get("enabled") is False:

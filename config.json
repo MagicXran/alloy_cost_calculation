@@ -111,6 +111,15 @@
     "S":  {"max": 0.020}
   },
 
+  "control_targets": {
+    "enabled": true,
+    "margin": 0.000,
+    "elements": {
+      "Si": {"enabled": true, "value": 0.25},
+      "C":  {"enabled": true, "value": 0.10}
+    }
+  },
+
   "residual": {
     "C": 0.04, "Si": 0.0, "Mn": 0.08, "Cr": 0.0,
     "P": 0.008, "S": 0.008

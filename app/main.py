@@ -23,8 +23,26 @@ def app_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-ROOT = app_root()
-CONFIG_PATH = ROOT / "config.json"
+def bundled_root() -> Path | None:
+    """返回 PyInstaller 内置资源目录；开发态没有该目录。"""
+
+    path = getattr(sys, "_MEIPASS", None)
+    return None if path is None else Path(path).resolve()
+
+
+def resource_file(name: str) -> Path:
+    """优先返回 exe 同级外置文件，缺失时退回 PyInstaller 内置资源。"""
+
+    external = app_root() / name
+    if external.exists():
+        return external
+    bundled = bundled_root()
+    if bundled is not None:
+        candidate = bundled / name
+        if candidate.exists():
+            return candidate
+    return external
+
 
 app = FastAPI(title="Alloy Cost Calculation API", version="0.1.0")
 
@@ -43,7 +61,7 @@ def frontend_file(name: str) -> Path:
     allowed = {"prototype.html", "ui.js", "config.json"}
     if name not in allowed:
         raise HTTPException(status_code=404, detail="Not Found")
-    path = ROOT / name
+    path = resource_file(name)
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"{name} 不存在")
     return path
@@ -87,7 +105,7 @@ def health() -> HealthResponse:
 def load_runtime_config() -> dict:
     """每次从 config.json 读取配置，保证前后端共享同一个事实源。"""
 
-    return json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
+    return json.loads(resource_file("config.json").read_text(encoding="utf-8-sig"))
 
 
 @app.get("/api/config")

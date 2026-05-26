@@ -74,9 +74,10 @@ docs/
 ## 关键约束
 
 - 前端不得再引入浏览器离线求解器；唯一计算内核是后端。
-- `ui.js` 的 `DEFAULT_CONFIG` 必须与 `config.json` 保持一致，测试会校验。
+- `ui.js` 不再内嵌 `DEFAULT_CONFIG`，必须从 `/config.json` 读取并回填页面；`config.json` 是单一事实源，测试会校验前后端是否读取同一份配置。
 - 当前元素集合是 `C, Si, Mn, Cr, P, S`；V/Nb/Ti/Ni/Cu/Mo/B/Sb 尚未进入模型。
 - 合金成分单位是百分数，例如 `Mn=65.66` 表示 `65.66%`。
 - 元素增量公式是 `kg/t * 合金元素百分数 * 回收率 / 1000`。
+- `control_targets` 默认控 `Si+C`；控元素只生成上限约束，不生成下限约束，逻辑集中在 `effective_bounds()`，不要污染求解器适配层。
 - `bag_size_kg > 0` 表示 MILP 整袋变量；`bag_size_kg = 0` 表示连续投料。
 - `solver=highs` 是默认正式求解器；`solver=internal` 只作为兜底和对照。

@@ -66,7 +66,14 @@
   label { color: var(--body); font-size: 12px; font-weight: 600; }
   input { width: 100%; height: 42px; border: 1px solid var(--hairline); border-radius: var(--radius-md); padding: 10px 12px; color: var(--ink); background: var(--canvas); font-family: var(--mono); font-size: 13px; }
   input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+  input:disabled { color: var(--muted); background: var(--surface-strong); cursor: not-allowed; }
   .section-label { margin: 20px 0 10px; color: var(--ink); font-size: 13px; font-weight: 700; }
+  .control-card { margin: 18px 0 0; padding: 12px; border: 1px solid rgba(0,82,255,.14); border-radius: var(--radius-lg); background: rgba(0,82,255,.04); }
+  .control-card .section-label { margin-top: 0; }
+  .control-row { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 10px; align-items: end; margin-top: 10px; }
+  .control-row.is-disabled { opacity: .58; }
+  .control-toggle { display: flex; align-items: center; gap: 8px; height: 42px; color: var(--ink); font-size: 12px; font-weight: 700; }
+  .control-toggle input { width: 18px; height: 18px; padding: 0; }
   details { margin-top: 18px; border-top: 1px solid var(--hairline-soft); padding-top: 14px; }
   summary { cursor: pointer; color: var(--primary); font-size: 13px; font-weight: 700; }
   .alloy-list { display: grid; gap: 8px; margin-top: 12px; }
@@ -175,6 +182,13 @@
         <div class="field-grid">
           <div class="field"><label for="cMin">C min</label><input id="cMin" type="number" value="0.06" step="0.01"></div><div class="field"><label for="cMax">C max</label><input id="cMax" type="number" value="0.10" step="0.01"></div><div class="field"><label for="siMin">Si min</label><input id="siMin" type="number" value="0.15" step="0.01"></div><div class="field"><label for="siMax">Si max</label><input id="siMax" type="number" value="0.25" step="0.01"></div><div class="field"><label for="mnMin">Mn min</label><input id="mnMin" type="number" value="1.10" step="0.01"></div><div class="field"><label for="mnMax">Mn max</label><input id="mnMax" type="number" value="1.30" step="0.01"></div><div class="field"><label for="crMin">Cr min</label><input id="crMin" type="number" value="0.35" step="0.01"></div><div class="field"><label for="crMax">Cr max</label><input id="crMax" type="number" value="0.45" step="0.01"></div><div class="field"><label for="pMax">P max</label><input id="pMax" type="number" value="0.025" step="0.001"></div><div class="field"><label for="sMax">S max</label><input id="sMax" type="number" value="0.020" step="0.001"></div>
         </div>
+        <div class="control-card" aria-label="控元素单值上限">
+          <div class="section-label">控元素单值上限 %</div>
+          <div class="helper-note">启用控元素后，该元素取消下限，只要求最终成分不超过控制上限减去控元素安全余量。</div>
+          <div class="field-grid single"><div class="field"><label for="controlMargin">控元素安全余量</label><input id="controlMargin" data-control-target type="number" value="0.000" step="0.001"></div></div>
+          <div class="control-row" id="controlSiRow"><label class="control-toggle"><input id="controlSiEnabled" data-control-target type="checkbox" checked>控 Si</label><div class="field"><label for="controlSiValue">Si 控制上限</label><input id="controlSiValue" data-control-target type="number" value="0.25" step="0.01"></div></div>
+          <div class="control-row" id="controlCRow"><label class="control-toggle"><input id="controlCEnabled" data-control-target type="checkbox" checked>控 C</label><div class="field"><label for="controlCValue">C 控制上限</label><input id="controlCValue" data-control-target type="number" value="0.10" step="0.01"></div></div>
+        </div>
         <details id="alloyDetails"><summary>7 种合金参数</summary><div class="helper-note">投料方式决定 MILP 是否按整袋取整：连续投料按 kg/t 连续优化；整袋投料按袋重换算为炉次整数袋。</div><div class="alloy-list" id="alloyList" aria-label="合金启用、价格和投料方式"></div></details>
       </div>
     </section>
@@ -198,6 +212,7 @@
       <div class="formula-grid">
         <article class="formula-card"><h4>通用元素增量</h4><code>ΔE_i = x_i × alloy_E_i × recovery_E_i / 1000</code><div>x_i 为第 i 种合金加入量 kg/t；合金成分按百分数录入，除以 1000 后换算为钢水中的百分含量增量。</div></article>
         <article class="formula-card"><h4>通用成分约束</h4><code>target_min_E ≤ residual_E + ΣΔE_i ≤ target_max_E</code><div>最终成分等于残余成分加全部合金贡献；P、S 这类只有上限的元素只校核最大值。</div></article>
+        <article class="formula-card"><h4>控元素约束</h4><code>residual_E + ΣΔE_i ≤ control_E - control_margin</code><div>控 Si 或控 C 启用后，该元素不再使用 min/max 范围，只保留单值上限约束。</div></article>
         <article class="formula-card"><h4>通用吨钢成本</h4><code>cost = Σ(price_i / 1000 × x_i)</code><div>价格单位为元/吨，加入量单位为 kg/t，因此除以 1000 后得到每吨钢合金成本。</div></article>
         <article class="formula-card"><h4>经验方案模型</h4><code>x_rule = conservative_milp(low_carbon_alloys) 或 sequence_greedy</code><div>经验方案优先使用低碳合金集合做保守整袋求解；若保守集合不可行，则按投料顺序逐步补足 Cr、Si、Mn、C，并由成分校核标记是否合格。</div></article>
         <article class="formula-card"><h4>LP 理论下限模型</h4><code>min cᵀx, s.t. A x ≤ b, 0 ≤ x_i ≤ max_i</code><div>LP 把所有合金加入量都视为连续变量，求成本理论下限；它用于看极限成本，不等于现场可直接执行的整袋投料单。</div></article>

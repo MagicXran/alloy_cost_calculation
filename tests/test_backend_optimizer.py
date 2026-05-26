@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core import OptimizerError, element_increment_kg_per_t, solve_alloy_cost, validate_config
+from app import main as app_main
+from app.core import OptimizerError, effective_bounds, element_increment_kg_per_t, solve_alloy_cost, validate_config
 from app.main import app, load_runtime_config
 from app.solvers import get_solver
 
@@ -46,6 +47,35 @@ def test_backend_serves_frontend_assets():
     assert client.get("/config.json").status_code == 200
 
 
+def test_resource_file_falls_back_to_pyinstaller_internal_dir(monkeypatch, tmp_path):
+    """PyInstaller 6 的 _internal 布局不能让发布包找不到前端资源。"""
+
+    exe_root = tmp_path / "release"
+    bundled = exe_root / "_internal"
+    exe_root.mkdir()
+    bundled.mkdir()
+    (bundled / "prototype.html").write_text("<html></html>", encoding="utf-8")
+    monkeypatch.setattr(app_main.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(app_main.sys, "executable", str(exe_root / "alloy_cost_calculation.exe"))
+    monkeypatch.setattr(app_main.sys, "_MEIPASS", str(bundled), raising=False)
+    assert app_main.resource_file("prototype.html") == bundled / "prototype.html"
+
+
+def test_resource_file_prefers_external_editable_config(monkeypatch, tmp_path):
+    """exe 同级 config.json 必须优先于内置配置，迁移后现场才能直接改参数。"""
+
+    exe_root = tmp_path / "release"
+    bundled = exe_root / "_internal"
+    exe_root.mkdir()
+    bundled.mkdir()
+    (exe_root / "config.json").write_text("{}", encoding="utf-8")
+    (bundled / "config.json").write_text('{"bundled": true}', encoding="utf-8")
+    monkeypatch.setattr(app_main.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(app_main.sys, "executable", str(exe_root / "alloy_cost_calculation.exe"))
+    monkeypatch.setattr(app_main.sys, "_MEIPASS", str(bundled), raising=False)
+    assert app_main.resource_file("config.json") == exe_root / "config.json"
+
+
 def test_mass_balance_uses_divide_by_1000_factor():
     """质量平衡必须使用 /1000，不能退回旧的 /10000 错误。"""
 
@@ -61,6 +91,40 @@ def test_validate_config_rejects_percent_unit_mistake():
         validate_config(config)
 
 
+def test_control_targets_replace_si_c_ranges_with_upper_limits():
+    """控 Si/C 启用后必须取消下限，只保留扣除控元素安全余量后的上限。"""
+
+    config = load_default_config()
+    config["control_targets"]["margin"] = 0.005
+    si_bounds = effective_bounds(config, "Si")
+    c_bounds = effective_bounds(config, "C")
+    mn_bounds = effective_bounds(config, "Mn")
+    assert si_bounds == {"min": None, "max": pytest.approx(0.245)}
+    assert c_bounds == {"min": None, "max": pytest.approx(0.095)}
+    assert mn_bounds["min"] == pytest.approx(1.11)
+    assert mn_bounds["max"] == pytest.approx(1.29)
+
+
+def test_control_targets_can_be_disabled_per_element():
+    """单个控元素关闭后，应退回原 target 范围语义。"""
+
+    config = load_default_config()
+    config["control_targets"]["elements"]["C"]["enabled"] = False
+    bounds = effective_bounds(config, "C")
+    assert bounds["min"] == pytest.approx(0.06)
+    assert bounds["max"] == pytest.approx(0.095)
+
+
+def test_control_target_margin_cannot_cross_zero():
+    """控元素上限扣余量后不能变成负数。"""
+
+    config = load_default_config()
+    config["control_targets"]["elements"]["Si"]["value"] = 0.002
+    config["control_targets"]["margin"] = 0.005
+    with pytest.raises(OptimizerError, match="Si 控制目标扣除安全余量后不能小于 0"):
+        validate_config(config)
+
+
 def test_internal_solver_returns_three_modes_and_feasible_milp():
     """internal 兜底求解器必须返回三方案，并保证 MILP 成分合格。"""
 
@@ -71,6 +135,9 @@ def test_internal_solver_returns_three_modes_and_feasible_milp():
     assert result["modes"]["lp"]["costPerTon"] > 0
     assert result["modes"]["milp"]["costPerTon"] > 0
     assert all(check["ok"] for check in result["modes"]["milp"]["chemistryChecks"])
+    chemistry_by_element = {check["element"]: check for check in result["modes"]["milp"]["chemistryChecks"]}
+    assert chemistry_by_element["Si"]["min"] is None
+    assert chemistry_by_element["C"]["min"] is None
     assert any("规则基线是系统按保守规则生成的对照方案" in warning for warning in result["warnings"])
 
 

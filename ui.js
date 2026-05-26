@@ -42,6 +42,7 @@
     byId('heatWeight').value = config.heat_weight_t;
     setElementValues('res', config.residual || {}, { C: 'C', Si: 'Si', Mn: 'Mn', Cr: 'Cr', P: 'P', S: 'S' });
     setBoundValues(config.target || {});
+    setControlTargets(config);
     var badge = byId('heatWeightBadge');
     if (badge) badge.textContent = fmt(config.heat_weight_t, 1) + ' t';
   }
@@ -64,6 +65,37 @@
       var value = ((target[spec[0]] || {})[spec[1]]);
       if (value !== undefined) byId(id).value = value;
     });
+  }
+
+  function setControlTargets(config) {
+    var control = config.control_targets || {};
+    var elements = control.elements || {};
+    setChecked('controlSiEnabled', controlEnabled(control, elements.Si));
+    setChecked('controlCEnabled', controlEnabled(control, elements.C));
+    setValue('controlSiValue', controlValue(config, 'Si'));
+    setValue('controlCValue', controlValue(config, 'C'));
+    setValue('controlMargin', control.margin === undefined ? 0 : control.margin);
+    syncControlTargetFields();
+  }
+
+  function controlEnabled(control, elementConfig) {
+    return control.enabled !== false && !!(elementConfig && elementConfig.enabled);
+  }
+
+  function controlValue(config, element) {
+    var control = ((config.control_targets || {}).elements || {})[element] || {};
+    var target = (config.target || {})[element] || {};
+    return control.value !== undefined ? control.value : target.max;
+  }
+
+  function setChecked(id, checked) {
+    var input = byId(id);
+    if (input) input.checked = !!checked;
+  }
+
+  function setValue(id, value) {
+    var input = byId(id);
+    if (input && value !== undefined) input.value = value;
   }
 
   function ensureConfigLoaded() {
@@ -94,9 +126,23 @@
       Mn: { min: num('mnMin'), max: num('mnMax') }, Cr: { min: num('crMin'), max: num('crMax') },
       P: { max: num('pMax') }, S: { max: num('sMax') }
     };
+    config.control_targets = readControlTargets();
     readAlloyInputs(config);
 
     return config;
+  }
+
+  function readControlTargets() {
+    var siEnabled = !!byId('controlSiEnabled').checked;
+    var cEnabled = !!byId('controlCEnabled').checked;
+    return {
+      enabled: siEnabled || cEnabled,
+      margin: num('controlMargin'),
+      elements: {
+        Si: { enabled: siEnabled, value: num('controlSiValue') },
+        C: { enabled: cEnabled, value: num('controlCValue') }
+      }
+    };
   }
 
   // 合金价格和袋重是求解输入，不是展示文本；必须从控件写回配置。
@@ -191,6 +237,7 @@
       renderAlloyInputs();
       document.addEventListener('change', function (event) {
         if (event.target && event.target.matches('[data-alloy-bag-mode-index]')) syncBagModeLabels();
+        if (event.target && event.target.matches('[data-control-target]')) syncControlTargetFields();
       });
       return solveRemote();
     }).catch(function (error) {
@@ -315,12 +362,38 @@
   }
 
   function effectiveBounds(config, element) {
+    var control = config.control_targets || {};
+    var controlled = (control.elements || {})[element] || {};
+    if (control.enabled !== false && controlled.enabled === true) {
+      return {
+        min: null,
+        max: Number(controlled.value) - Number(control.margin || 0)
+      };
+    }
     var target = (config.target || {})[element] || {};
     var margin = (config.safety_margins || {})[element] || { low: 0, high: 0 };
     return {
       min: target.min === undefined ? null : Number(target.min) + Number(margin.low || 0),
       max: target.max === undefined ? null : Number(target.max) - Number(margin.high || 0)
     };
+  }
+
+  function syncControlTargetFields() {
+    syncControlTargetField('Si');
+    syncControlTargetField('C');
+  }
+
+  function syncControlTargetField(element) {
+    var lower = element.toLowerCase();
+    var enabled = !!byId('control' + element + 'Enabled').checked;
+    var single = byId('control' + element + 'Value');
+    var min = byId(lower + 'Min');
+    var max = byId(lower + 'Max');
+    var row = byId('control' + element + 'Row');
+    if (single) single.disabled = !enabled;
+    if (min) min.disabled = enabled;
+    if (max) max.disabled = enabled;
+    if (row) row.classList.toggle('is-disabled', !enabled);
   }
 
   function renderSequence(mode) {
@@ -332,7 +405,48 @@
   }
 
   function renderQuality(result) {
-    byId('qualityStrip').innerHTML = '<strong>质控提醒</strong>' + result.warnings.map(function (warning) { return '<span>' + warning + '</span>'; }).join('');
+    var parts = ['<strong>质控提醒</strong>'];
+    parts = parts.concat(result.warnings.map(function (warning) { return '<span>' + warning + '</span>'; }));
+    parts = parts.concat(controlTargetStatusHints(result));
+    byId('qualityStrip').innerHTML = parts.join('');
+  }
+
+  function controlTargetStatusHints(result) {
+    var config = runtimeConfig || {};
+    var control = config.control_targets || {};
+    var elements = control.elements || {};
+    if (control.enabled === false) return ['<span>控元素未启用。</span>'];
+    var hints = [];
+    ['Si', 'C'].forEach(function (element) {
+      var elementConfig = elements[element] || {};
+      if (elementConfig.enabled !== true) {
+        hints.push('<span>' + element + ' 控制已关闭。</span>');
+        return;
+      }
+      var bound = effectiveBounds(config, element);
+      var check = nextCheckByElement(result.modes.milp.chemistryChecks, element);
+      if (!check) return;
+      var max = bound.max;
+      var current = Number(check.value);
+      var gap = max - current;
+      if (!Number.isFinite(max)) {
+        hints.push('<span>' + element + ' 控制上限无效，检查配置。</span>');
+        return;
+      }
+      if (gap <= 5e-4) {
+        hints.push('<span>' + element + ' 控制上限已生效，当前解已贴近上限 ' + fmt(max, 3) + '%。</span>');
+      } else {
+        hints.push('<span>' + element + ' 控制上限未卡住当前解，当前值 ' + fmt(current, 3) + '%，上限 ' + fmt(max, 3) + '%，还差 ' + fmt(gap, 3) + '%；这条约束是活的，但这次没压住解。</span>');
+      }
+    });
+    return hints;
+  }
+
+  function nextCheckByElement(checks, element) {
+    for (var i = 0; i < checks.length; i += 1) {
+      if (checks[i].element === element) return checks[i];
+    }
+    return null;
   }
 
   function renderInfeasible(result) {
@@ -345,7 +459,7 @@
     setTimeout(solveRemote, 0);
   }
 
-  window.AlloyCostUI = { readInput: readInput, readAlloyInputs: readAlloyInputs, percentInRange: percentInRange, syncBagModeLabels: syncBagModeLabels, activeBoundNote: activeBoundNote, effectiveBounds: effectiveBounds, requestOptimize: requestOptimize, requestConfig: requestConfig, initializeFromConfig: initializeFromConfig, setRuntimeConfigForTest: setRuntimeConfigForTest, apiBaseUrl: apiBaseUrl };
+  window.AlloyCostUI = { readInput: readInput, readAlloyInputs: readAlloyInputs, percentInRange: percentInRange, syncBagModeLabels: syncBagModeLabels, syncControlTargetFields: syncControlTargetFields, activeBoundNote: activeBoundNote, effectiveBounds: effectiveBounds, renderQuality: renderQuality, requestOptimize: requestOptimize, requestConfig: requestConfig, initializeFromConfig: initializeFromConfig, setRuntimeConfigForTest: setRuntimeConfigForTest, apiBaseUrl: apiBaseUrl };
   window.solveRemote = solveRemote;
   window.requestSolveRemote = requestSolveRemote;
   window.selectMode = selectMode;

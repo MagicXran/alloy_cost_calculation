@@ -44,10 +44,22 @@ test('核心公式说明必须覆盖三种方案模型且使用整页宽度', ()
   assert.match(html, /经验方案模型/);
   assert.match(html, /LP 理论下限模型/);
   assert.match(html, /MILP 整袋模型/);
+  assert.match(html, /控元素约束/);
+  assert.match(html, /control_E - control_margin/);
   assert.match(html, /\/ 1000/);
   assert.doesNotMatch(html, /\/ 10<\/code>/);
   assert.match(html, /\.formula-panel \{ width: 100%;/);
   assert.doesNotMatch(html, /\.formula-panel \{ max-width: 980px;/);
+});
+
+test('页面提供默认开启的控 Si 和控 C 单值上限输入', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'prototype.html'), 'utf8');
+  assert.match(html, /id="controlSiEnabled"[^>]*checked/);
+  assert.match(html, /id="controlCEnabled"[^>]*checked/);
+  assert.match(html, /id="controlSiValue"/);
+  assert.match(html, /id="controlCValue"/);
+  assert.match(html, /id="controlMargin"/);
+  assert.match(html, /控元素安全余量/);
 });
 
 test('ui.js 调用后端 /api/optimize，不再调用浏览器离线求解器', async () => {
@@ -141,7 +153,98 @@ test('ui.js 暴露可测试的 UI 纯函数', () => {
   assert.equal(typeof sandbox.window.AlloyCostUI.readAlloyInputs, 'function');
   assert.equal(typeof sandbox.window.AlloyCostUI.requestConfig, 'function');
   assert.equal(typeof sandbox.window.AlloyCostUI.activeBoundNote, 'function');
+  assert.equal(typeof sandbox.window.AlloyCostUI.syncControlTargetFields, 'function');
   assert.equal(typeof sandbox.window.selectMode, 'function');
+});
+
+test('控 Si/C 输入会写入 control_targets 并影响有效边界', () => {
+  const vm = require('node:vm');
+  const script = fs.readFileSync(path.join(__dirname, '..', 'ui.js'), 'utf8');
+  const elements = {
+    heatWeight: { value: '132.2' }, resC: { value: '0.04' }, resSi: { value: '0' }, resMn: { value: '0.08' }, resCr: { value: '0' }, resP: { value: '0.008' }, resS: { value: '0.008' },
+    cMin: { value: '0.06', disabled: false }, cMax: { value: '0.10', disabled: false }, siMin: { value: '0.15', disabled: false }, siMax: { value: '0.25', disabled: false },
+    mnMin: { value: '1.10' }, mnMax: { value: '1.30' }, crMin: { value: '0.35' }, crMax: { value: '0.45' }, pMax: { value: '0.025' }, sMax: { value: '0.020' },
+    controlSiEnabled: { checked: true }, controlCEnabled: { checked: false }, controlSiValue: { value: '0.22', disabled: false }, controlCValue: { value: '0.10', disabled: false }, controlMargin: { value: '0.005' },
+    controlSiRow: { classList: { toggle() {} } }, controlCRow: { classList: { toggle() {} } },
+    alloyList: { innerHTML: '' }, runStatus: { textContent: '', style: {} }
+  };
+  const sandbox = {
+    window: {},
+    document: {
+      addEventListener() {},
+      getElementById(id) { return elements[id] || { value: '0', innerHTML: '', textContent: '', style: {}, className: '' }; },
+      querySelectorAll(selector) {
+        if (selector === '[data-alloy-index]') return [];
+        if (selector === '[data-alloy-price-index]') return [];
+        if (selector === '[data-alloy-bag-mode-index]') return [];
+        return [];
+      },
+      querySelector() { return null; }
+    },
+  };
+  vm.runInNewContext(script, sandbox, { filename: 'ui.js' });
+  sandbox.window.AlloyCostUI.setRuntimeConfigForTest(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8')));
+  const config = sandbox.window.AlloyCostUI.readInput();
+  assert.equal(config.control_targets.enabled, true);
+  assert.equal(config.control_targets.margin, 0.005);
+  assert.equal(config.control_targets.elements.Si.enabled, true);
+  assert.equal(config.control_targets.elements.Si.value, 0.22);
+  assert.equal(config.control_targets.elements.C.enabled, false);
+  const siBounds = sandbox.window.AlloyCostUI.effectiveBounds(config, 'Si');
+  assert.equal(siBounds.min, null);
+  assert.equal(siBounds.max, 0.215);
+});
+
+test('质控提醒应提示控元素上限是否真正卡住当前解', () => {
+  const vm = require('node:vm');
+  const script = fs.readFileSync(path.join(__dirname, '..', 'ui.js'), 'utf8');
+  const elements = {
+    qualityStrip: { innerHTML: '' },
+    heatWeight: { value: '132.2' },
+    resC: { value: '0.039' }, resSi: { value: '0' }, resMn: { value: '0.08' }, resCr: { value: '0' }, resP: { value: '0.001' }, resS: { value: '0.001' },
+    cMin: { value: '0.06' }, cMax: { value: '0.10' }, siMin: { value: '0.15' }, siMax: { value: '0.25' }, mnMin: { value: '0.84' }, mnMax: { value: '0.87' }, crMin: { value: '0.35' }, crMax: { value: '0.38' }, pMax: { value: '0.9' }, sMax: { value: '0.9' },
+    controlSiEnabled: { checked: true }, controlCEnabled: { checked: true }, controlSiValue: { value: '0.22' }, controlCValue: { value: '0.39' }, controlMargin: { value: '0' },
+    controlSiRow: { classList: { toggle() {} } }, controlCRow: { classList: { toggle() {} } },
+    runStatus: { textContent: '', style: {} },
+    alloyList: { innerHTML: '' }, summaryGrid: { innerHTML: '' }, comparisonBody: { innerHTML: '' }, chemBadge: { textContent: '', className: '' }, chemList: { innerHTML: '' }, chemActiveNote: { textContent: '' }, sequenceTitle: { textContent: '' }, sequenceBadge: { textContent: '' }, sequenceList: { innerHTML: '' }, heroCost: { innerHTML: '' }, heroCostSub: { textContent: '' }, heatWeightBadge: { textContent: '' }, modeNote: { textContent: '' }
+  };
+  const sandbox = {
+    window: {},
+    document: {
+      addEventListener() {},
+      getElementById(id) { return elements[id] || { value: '0', innerHTML: '', textContent: '', style: {}, className: '' }; },
+      querySelectorAll(selector) {
+        if (selector === '[data-alloy-index]') return [];
+        if (selector === '[data-alloy-price-index]') return [];
+        if (selector === '[data-alloy-bag-mode-index]') return [];
+        if (selector === '[data-mode-key]') return [];
+        return [];
+      },
+      querySelector() { return null; }
+    },
+  };
+  vm.runInNewContext(script, sandbox, { filename: 'ui.js' });
+  sandbox.window.AlloyCostUI.setRuntimeConfigForTest(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8')));
+  sandbox.window.AlloyCostUI.setRuntimeConfigForTest({
+    heat_weight_t: 132.2,
+    residual: { C: 0.039, Si: 0, Mn: 0.08, Cr: 0, P: 0.001, S: 0.001 },
+    target: { C: { min: 0.06, max: 0.10 }, Si: { min: 0.15, max: 0.25 }, Mn: { min: 0.84, max: 0.87 }, Cr: { min: 0.35, max: 0.38 }, P: { max: 0.9 }, S: { max: 0.9 } },
+    control_targets: { enabled: true, margin: 0, elements: { Si: { enabled: true, value: 0.22 }, C: { enabled: true, value: 0.39 } } },
+    alloys: JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8')).alloys
+  });
+  sandbox.window.AlloyCostUI.renderQuality({
+    warnings: [],
+    modes: {
+      milp: {
+        chemistryChecks: [
+          { element: 'C', value: 0.166954, min: null, max: 0.39, ok: true },
+          { element: 'Si', value: 0.000488, min: null, max: 0.22, ok: true },
+        ]
+      }
+    }
+  });
+  assert.match(elements.qualityStrip.innerHTML, /C 控制上限未卡住当前解/);
+  assert.match(elements.qualityStrip.innerHTML, /Si 控制上限未卡住当前解/);
 });
 
 test('成分校核能提示贴边约束', () => {
