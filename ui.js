@@ -8,11 +8,13 @@
   function clone(value) { return JSON.parse(JSON.stringify(value)); }
   function byId(id) { return document.getElementById(id); }
   var lastResult = null;
+  var batchParsedTemplate = null;
+  var latestBatchResult = null;
   var selectedModeKey = 'milp';
   var MODE_META = {
     rule: { label: '规则基线', note: '规则基线是系统按保守规则生成的对照方案，不等于现场历史真实投料。', sequenceBadge: '规则基线对照' },
-    lp: { label: 'LP 理论下限', note: 'LP 是连续变量理论下限，不是现场整袋投料单；顺序仅用于阅读理论用量。', sequenceBadge: '理论顺序参考' },
-    milp: { label: 'MILP 现场方案', note: 'MILP 是按整袋约束生成的现场投料方案。', sequenceBadge: '按现场投料阅读' }
+    lp: { label: 'LP 理论下限', note: 'LP 是连续变量理论下限，不是现场整袋方案；路线明细仅用于阅读理论用量。', sequenceBadge: '理论路线参考' },
+    milp: { label: 'MILP 整袋方案', note: 'MILP 是按整袋约束生成的成本路线。', sequenceBadge: '按成本路线阅读' }
   };
   function num(id) {
     var value = byId(id).value;
@@ -22,6 +24,14 @@
     return parsed;
   }
   function fmt(value, digits) { return Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits }); }
+  function escapeHtml(value) {
+    return String(value === null || value === undefined ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
 
   // 首次加载时用运行时配置渲染合金开关，计算数据保留在配置对象而不是 DOM 文本里。
   function renderAlloyInputs() {
@@ -32,7 +42,8 @@
       var bag = alloy.bag_size_kg > 0 ? alloy.bag_size_kg : runtimeConfig.milp_settings.default_bag_size_kg;
       var bagChecked = alloy.bag_size_kg > 0 ? 'checked' : '';
       var modeText = alloy.bag_size_kg > 0 ? '整袋' : '连续';
-      return '<div class="alloy-row"><input type="checkbox" aria-label="启用' + alloy.name + '" data-alloy-index="' + index + '" ' + checked + '><span class="alloy-name">' + alloy.name + '</span><span class="alloy-controls"><label class="alloy-field"><span>¥/t</span><input class="compact-input" type="number" min="100" step="1" data-alloy-price-index="' + index + '" value="' + alloy.price_per_ton + '"></label><label class="switch-field"><input type="checkbox" data-alloy-bag-mode-index="' + index + '" ' + bagChecked + '><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-alloy-mode-text="' + index + '">' + modeText + '</span><span class="alloy-field bag-size-field" data-alloy-bag-field="' + index + '"><span>kg/袋</span><input class="compact-input" type="number" min="1" step="1" data-alloy-bag-index="' + index + '" value="' + bag + '"></span></label></span></div>';
+      var safeName = escapeHtml(alloy.name);
+      return '<div class="alloy-row"><input type="checkbox" aria-label="启用' + safeName + '" data-alloy-index="' + index + '" ' + checked + '><span class="alloy-name">' + safeName + '</span><span class="alloy-controls"><label class="alloy-field"><span>¥/t</span><input class="compact-input" type="number" min="100" step="1" data-alloy-price-index="' + index + '" value="' + escapeHtml(alloy.price_per_ton) + '"></label><label class="switch-field"><input type="checkbox" data-alloy-bag-mode-index="' + index + '" ' + bagChecked + '><span class="switch-track" aria-hidden="true"></span><span class="switch-text" data-alloy-mode-text="' + index + '">' + modeText + '</span><span class="alloy-field bag-size-field" data-alloy-bag-field="' + index + '"><span>kg/袋</span><input class="compact-input" type="number" min="1" step="1" data-alloy-bag-index="' + index + '" value="' + escapeHtml(bag) + '"></span></label></span></div>';
     }).join('');
     syncBagModeLabels();
   }
@@ -235,6 +246,8 @@
       window.RUNTIME_CONFIG = runtimeConfig;
       applyConfigToForm(runtimeConfig);
       renderAlloyInputs();
+      wireBatchFileInput();
+      renderBatchPreview(null, 0, 0);
       document.addEventListener('change', function (event) {
         if (event.target && event.target.matches('[data-alloy-bag-mode-index]')) syncBagModeLabels();
         if (event.target && event.target.matches('[data-control-target]')) syncControlTargetFields();
@@ -265,6 +278,189 @@
     return 'HTTP ' + statusCode;
   }
 
+  function wireBatchFileInput() {
+    var input = byId('batchFile');
+    if (!input || input.dataset.wired === 'true') return;
+    input.dataset.wired = 'true';
+    input.addEventListener('change', function () {
+      var file = input.files && input.files[0];
+      var label = byId('batchFileLabel');
+      if (label) label.textContent = file ? file.name : '选择 .xlsx 文件';
+      batchParsedTemplate = null;
+      latestBatchResult = null;
+      setBatchButtons(false, false);
+      setBatchStatus(file ? '已选择文件：' + file.name + '。请点击“上传预检”。' : '请先选择 .xlsx 文件。', 'pending');
+    });
+  }
+
+  function validateBatchTemplate() {
+    try {
+      var file = selectedBatchFile();
+      setBatchStatus('正在上传并预检模板：' + file.name, 'pending');
+      setBatchButtons(false, false);
+      latestBatchResult = null;
+      return requestValidateTemplate(file).then(function (payload) {
+        batchParsedTemplate = payload.status === 'ok' ? payload.parsed : null;
+        renderBatchPreview(payload.preview, payload.errors.length, payload.warnings.length);
+        renderBatchIssues(payload.errors, payload.warnings);
+        if (payload.status !== 'ok') {
+          setBatchStatus('预检失败：发现 ' + payload.errors.length + ' 个错误。请按表格提示修改后重新上传。', 'error');
+          setBatchButtons(false, false);
+          return payload;
+        }
+        setBatchStatus('预检通过：可执行批量计算。', payload.warnings.length ? 'warning' : 'ok');
+        setBatchButtons(true, false);
+        return payload;
+      }).catch(function (error) {
+        batchParsedTemplate = null;
+        renderBatchPreview(null, 1, 0);
+        renderBatchIssues([{ message: error.message, suggestion: '确认文件是系统模板，且后端服务正在运行。' }], []);
+        setBatchStatus('预检接口失败：' + error.message, 'error');
+        setBatchButtons(false, false);
+      });
+    } catch (error) {
+      setBatchStatus('预检前置错误：' + error.message, 'error');
+      setBatchButtons(false, false);
+      return Promise.resolve();
+    }
+  }
+
+  function requestValidateTemplate(file) {
+    if (typeof window.fetch !== 'function') throw new Error('当前浏览器不支持 fetch，无法上传模板');
+    if (typeof window.FormData !== 'function') throw new Error('当前浏览器不支持 FormData，无法上传模板');
+    var form = new window.FormData();
+    form.append('file', file);
+    return window.fetch(apiBaseUrl() + '/api/template/validate', { method: 'POST', body: form }).then(readApiJson);
+  }
+
+  function runBatchOptimize() {
+    if (!batchParsedTemplate) {
+      setBatchStatus('请先上传模板并通过预检。', 'error');
+      return Promise.resolve();
+    }
+    setBatchStatus('正在批量计算，单行失败不会阻断其他任务。', 'pending');
+    setBatchButtons(false, false);
+    return requestBatchOptimize(batchParsedTemplate).then(function (payload) {
+      latestBatchResult = payload;
+      renderBatchResult(payload);
+      setBatchButtons(true, true);
+      return payload;
+    }).catch(function (error) {
+      latestBatchResult = null;
+      setBatchStatus('批量计算失败：' + error.message, 'error');
+      setBatchButtons(true, false);
+    });
+  }
+
+  function requestBatchOptimize(parsedTemplate) {
+    if (typeof window.fetch !== 'function') throw new Error('当前浏览器不支持 fetch，无法批量计算');
+    return window.fetch(apiBaseUrl() + '/api/batch-optimize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ solver: 'highs', template: parsedTemplate })
+    }).then(readApiJson);
+  }
+
+  function exportBatchResult() {
+    if (!latestBatchResult || !latestBatchResult.batchId) {
+      setBatchStatus('没有可导出的批量结果，请先批量计算。', 'error');
+      return;
+    }
+    window.location.href = apiBaseUrl() + '/api/batch-result/' + latestBatchResult.batchId + '/export';
+  }
+
+  function readApiJson(response) {
+    return response.text().then(function (text) {
+      var payload = text ? JSON.parse(text) : {};
+      if (!response.ok) throw new Error(apiErrorMessage(payload, response.status));
+      return payload;
+    });
+  }
+
+  function selectedBatchFile() {
+    var input = byId('batchFile');
+    var file = input && input.files && input.files[0];
+    if (!file) throw new Error('请先选择 .xlsx 文件');
+    if (!/\.xlsx$/i.test(file.name || '')) throw new Error('只能上传 .xlsx 文件');
+    return file;
+  }
+
+  function setBatchButtons(canRun, canExport) {
+    var run = byId('runBatchButton');
+    var exportButton = byId('exportBatchButton');
+    if (run) run.disabled = !canRun;
+    if (exportButton) exportButton.disabled = !canExport;
+  }
+
+  function setBatchStatus(message, level) {
+    var status = byId('batchStatus');
+    var badge = byId('batchStatusBadge');
+    if (status) status.textContent = message;
+    if (!badge) return;
+    var badgeClass = 'badge';
+    if (level === 'ok') badgeClass += ' badge-green';
+    if (level === 'pending') badgeClass += ' badge-blue';
+    if (level === 'warning') badgeClass += ' badge-yellow';
+    badge.className = badgeClass;
+    badge.textContent = level === 'ok' ? '已通过' : level === 'error' ? '有错误' : level === 'warning' ? '有警告' : '处理中';
+  }
+
+  function renderBatchPreview(preview, errorCount, warningCount) {
+    var safePreview = preview || { taskCount: '-', alloyCount: '-', priceCount: '-' };
+    renderBatchCards([
+      ['任务数', safePreview.taskCount],
+      ['合金数', safePreview.alloyCount],
+      ['价格数', safePreview.priceCount],
+      ['错误/警告', String(errorCount || 0) + '/' + String(warningCount || 0)]
+    ]);
+  }
+
+  function renderBatchResult(payload) {
+    var summary = payload.summary || { total: 0, success: 0, failed: 0 };
+    renderBatchCards([
+      ['总任务', summary.total],
+      ['成功', summary.success],
+      ['失败', summary.failed],
+      ['结果ID', payload.batchId ? payload.batchId.slice(0, 8) : '-']
+    ]);
+    renderBatchIssues(batchResultErrors(payload), []);
+    var message = '批量计算完成：总任务 ' + summary.total + '，成功 ' + summary.success + '，失败 ' + summary.failed + '。';
+    setBatchStatus(message, summary.failed ? 'warning' : 'ok');
+  }
+
+  function batchResultErrors(payload) {
+    var issues = [];
+    (payload.results || []).forEach(function (item) {
+      (item.errors || []).forEach(function (error) {
+        issues.push(error);
+      });
+    });
+    return issues;
+  }
+
+  function previewCard(label, value) {
+    return '<div class="preview-card"><div class="preview-label">' + escapeHtml(label) + '</div><div class="preview-value">' + escapeHtml(value) + '</div></div>';
+  }
+
+  function renderBatchCards(cards) {
+    var container = byId('batchPreview');
+    if (!container) return;
+    container.innerHTML = cards.map(function (card) { return previewCard(card[0], card[1]); }).join('');
+  }
+
+  function renderBatchIssues(errors, warnings) {
+    var body = byId('batchIssuesBody');
+    if (!body) return;
+    var rows = [];
+    (errors || []).forEach(function (issue) { rows.push(issueRow('错误', issue)); });
+    (warnings || []).forEach(function (issue) { rows.push(issueRow('警告', issue)); });
+    body.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="6">暂无错误或警告。</td></tr>';
+  }
+
+  function issueRow(type, issue) {
+    return '<tr><td>' + escapeHtml(type) + '</td><td>' + escapeHtml(issue.sheet || '') + '</td><td>' + escapeHtml(issue.row || '') + '</td><td>' + escapeHtml(issue.field || '') + '</td><td>' + escapeHtml(issue.message || issue.code || '') + '</td><td>' + escapeHtml(issue.suggestion || '') + '</td></tr>';
+  }
+
   function renderResult(config, result) {
     var milp = result.modes.milp;
     var rule = result.modes.rule;
@@ -282,7 +478,7 @@
     byId('runStatus').textContent = '求解完成：结果已按当前输入刷新。';
   }
 
-  // 方案选择只影响右侧校核和下方顺序，不改变三方案同屏对比表。
+  // 方案选择只影响右侧校核和下方路线明细，不改变三方案同屏对比表。
   function selectMode(modeKey) {
     selectedModeKey = MODE_META[modeKey] ? modeKey : 'milp';
     if (lastResult) renderSelectedMode(lastResult);
@@ -295,7 +491,7 @@
       button.classList.toggle('is-active', button.dataset.modeKey === selectedModeKey);
     });
     byId('modeNote').textContent = meta.note;
-    byId('sequenceTitle').textContent = meta.label + '加入顺序';
+    byId('sequenceTitle').textContent = meta.label + '路线明细';
     byId('sequenceBadge').textContent = meta.sequenceBadge;
     renderChemistry(mode);
     renderSequence(mode);
@@ -316,7 +512,7 @@
   }
 
   function summaryCard(label, value, unit, sub, extraClass) {
-    return '<div class="summary-card"><div class="summary-label">' + label + '</div><div class="summary-value ' + extraClass + '">' + value + ' <span class="summary-unit">' + unit + '</span></div><div class="summary-sub">' + sub + '</div></div>';
+    return '<div class="summary-card"><div class="summary-label">' + escapeHtml(label) + '</div><div class="summary-value ' + escapeHtml(extraClass) + '">' + escapeHtml(value) + ' <span class="summary-unit">' + escapeHtml(unit) + '</span></div><div class="summary-sub">' + escapeHtml(sub) + '</div></div>';
   }
 
   function renderComparison(result) {
@@ -324,7 +520,7 @@
       var rule = result.modes.rule.alloys[index];
       var lp = result.modes.lp.alloys[index];
       var milpText = fmt(alloy.kgPerTon, 2) + (alloy.bags !== null ? ' (' + alloy.bags + '袋)' : '');
-      return '<tr><td>' + alloy.name + '</td><td>' + fmt(rule.kgPerTon, 2) + '</td><td>' + fmt(lp.kgPerTon, 2) + '</td><td>' + milpText + '</td></tr>';
+      return '<tr><td>' + escapeHtml(alloy.name) + '</td><td>' + fmt(rule.kgPerTon, 2) + '</td><td>' + fmt(lp.kgPerTon, 2) + '</td><td>' + escapeHtml(milpText) + '</td></tr>';
     });
     rows.push('<tr class="row-summary"><td>吨钢成本 ¥/t</td><td>' + fmt(result.modes.rule.costPerTon, 1) + '</td><td>' + fmt(result.modes.lp.costPerTon, 1) + '</td><td>' + fmt(result.modes.milp.costPerTon, 1) + '</td></tr>');
     rows.push(result.ruleFeasible
@@ -340,7 +536,7 @@
     byId('chemList').innerHTML = mode.chemistryChecks.map(function (check) {
       var width = percentInRange(check);
       var valueClass = check.ok ? 'chem-value' : 'chem-value text-down';
-      return '<div class="chem-row"><span class="chem-name">' + check.element + '</span><span class="chem-range"><span class="chem-fill" style="width:' + width + '%"></span></span><span class="' + valueClass + '">' + fmt(check.value, 3) + '</span></div>';
+      return '<div class="chem-row"><span class="chem-name">' + escapeHtml(check.element) + '</span><span class="chem-range"><span class="chem-fill" style="width:' + width + '%"></span></span><span class="' + valueClass + '">' + fmt(check.value, 3) + '</span></div>';
     }).join('');
     byId('chemActiveNote').textContent = activeBoundNote(mode.chemistryChecks);
   }
@@ -397,16 +593,27 @@
   }
 
   function renderSequence(mode) {
-    var rows = mode.alloys.filter(function (alloy) { return alloy.kgPerTon > 1e-6; }).sort(function (a, b) { return a.sequence - b.sequence; });
+    var rows = mode.alloys.filter(function (alloy) { return alloy.kgPerTon > 1e-8; }).sort(function (a, b) {
+      var costDelta = Number(b.costPerTon || 0) - Number(a.costPerTon || 0);
+      if (Math.abs(costDelta) > 1e-9) return costDelta;
+      return routeNameCompare(a, b);
+    });
     byId('sequenceList').innerHTML = rows.map(function (alloy, index) {
       var note = alloy.bags !== null ? alloy.bags + ' 袋，' + fmt(alloy.heatKg, 1) + ' kg/炉' : fmt(alloy.heatKg, 1) + ' kg/炉';
-      return '<div class="step"><div class="step-index">' + (index + 1) + '</div><div class="step-name">' + alloy.name + '</div><div class="step-dose">' + fmt(alloy.kgPerTon, 2) + ' kg/t</div><div class="step-note">' + note + '</div></div>';
+      return '<div class="step"><div class="step-index">' + (index + 1) + '</div><div class="step-name">' + escapeHtml(alloy.name) + '</div><div class="step-dose">' + fmt(alloy.kgPerTon, 2) + ' kg/t</div><div class="step-note">' + escapeHtml(note) + '</div></div>';
     }).join('');
+  }
+
+  function routeNameCompare(a, b) {
+    var left = String(a.name || '');
+    var right = String(b.name || '');
+    if (left === right) return 0;
+    return left < right ? -1 : 1;
   }
 
   function renderQuality(result) {
     var parts = ['<strong>质控提醒</strong>'];
-    parts = parts.concat(result.warnings.map(function (warning) { return '<span>' + warning + '</span>'; }));
+    parts = parts.concat(result.warnings.map(function (warning) { return '<span>' + escapeHtml(warning) + '</span>'; }));
     parts = parts.concat(controlTargetStatusHints(result));
     byId('qualityStrip').innerHTML = parts.join('');
   }
@@ -450,7 +657,7 @@
   }
 
   function renderInfeasible(result) {
-    byId('comparisonBody').innerHTML = '<tr><td colspan="4">无可行解：' + result.diagnostics.join('；') + '</td></tr>';
+    byId('comparisonBody').innerHTML = '<tr><td colspan="4">无可行解：' + escapeHtml(result.diagnostics.join('；')) + '</td></tr>';
     byId('runStatus').textContent = '无可行解：' + result.diagnostics.join('；');
   }
 
@@ -459,10 +666,13 @@
     setTimeout(solveRemote, 0);
   }
 
-  window.AlloyCostUI = { readInput: readInput, readAlloyInputs: readAlloyInputs, percentInRange: percentInRange, syncBagModeLabels: syncBagModeLabels, syncControlTargetFields: syncControlTargetFields, activeBoundNote: activeBoundNote, effectiveBounds: effectiveBounds, renderQuality: renderQuality, requestOptimize: requestOptimize, requestConfig: requestConfig, initializeFromConfig: initializeFromConfig, setRuntimeConfigForTest: setRuntimeConfigForTest, apiBaseUrl: apiBaseUrl };
+  window.AlloyCostUI = { readInput: readInput, readAlloyInputs: readAlloyInputs, percentInRange: percentInRange, syncBagModeLabels: syncBagModeLabels, syncControlTargetFields: syncControlTargetFields, activeBoundNote: activeBoundNote, effectiveBounds: effectiveBounds, renderResult: renderResult, renderQuality: renderQuality, requestOptimize: requestOptimize, requestConfig: requestConfig, initializeFromConfig: initializeFromConfig, setRuntimeConfigForTest: setRuntimeConfigForTest, apiBaseUrl: apiBaseUrl, requestValidateTemplate: requestValidateTemplate, requestBatchOptimize: requestBatchOptimize, renderBatchPreview: renderBatchPreview, renderBatchIssues: renderBatchIssues };
   window.solveRemote = solveRemote;
   window.requestSolveRemote = requestSolveRemote;
   window.selectMode = selectMode;
+  window.validateBatchTemplate = validateBatchTemplate;
+  window.runBatchOptimize = runBatchOptimize;
+  window.exportBatchResult = exportBatchResult;
   document.addEventListener('DOMContentLoaded', function () {
     initializeFromConfig();
   });

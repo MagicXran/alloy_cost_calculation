@@ -6,7 +6,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main as app_main
-from app.core import OptimizerError, effective_bounds, element_increment_kg_per_t, solve_alloy_cost, validate_config
+from app.core import (
+    OptimizerError,
+    effective_bounds,
+    element_increment_kg_per_t,
+    solve_alloy_cost,
+    solve_element_limit_under_other_constraints,
+    validate_config,
+)
 from app.main import app, load_runtime_config
 from app.solvers import get_solver
 
@@ -186,6 +193,41 @@ def test_infeasible_config_returns_diagnostics():
     result = solve_alloy_cost(config, get_solver("highs"))
     assert result["status"] == "infeasible"
     assert "Mn" in "\n".join(result["diagnostics"])
+
+
+def test_infeasible_config_reports_coupled_element_reach_limit():
+    """单元素最大量够但多元素组合冲突时，应报告排除本元素约束后的可达边界。"""
+
+    config = load_default_config()
+    config["control_targets"] = {"enabled": False, "margin": 0, "elements": {}}
+    config["target"] = {
+        "C": {"min": 0.39, "max": 0.41},
+        "Si": {"min": 0.05, "max": 0.12},
+        "Mn": {"min": 0.20, "max": 0.40},
+        "P": {"max": 0.025},
+        "S": {"max": 0.020},
+    }
+    config["residual"] = {"C": 0.07, "Si": 0, "Mn": 0.12, "P": 0, "S": 0, "Cr": 0}
+    config["recovery_rates"].update({"C": 0.9, "Si": 0.75, "Mn": 0.98, "Cr": 0.96, "P": 1, "S": 1})
+    for alloy in config["alloys"]:
+        alloy["enabled"] = True
+        alloy["bag_size_kg"] = 0
+        if alloy["name"] == "高碳锰铁":
+            alloy["composition"]["C"] = 6.69
+        if alloy["name"] == "硅锰":
+            alloy["composition"].update({"C": 1.72, "Si": 17.69, "Mn": 65.66, "P": 0.15, "S": 0.02})
+
+    result = solve_alloy_cost(config, get_solver("highs"))
+    max_c = solve_element_limit_under_other_constraints(config, config["alloys"], get_solver("highs"), "C", maximize=True)
+
+    assert result["status"] == "infeasible"
+    assert max_c == pytest.approx(0.2748, abs=5e-4)
+    assert max_c < config["target"]["C"]["min"]
+    diagnostics = "\n".join(result["diagnostics"])
+    assert "C" in diagnostics
+    assert "其他元素约束" in diagnostics
+    assert "最多" in diagnostics
+    assert "低于下限 0.3900%" in diagnostics
 
 
 def test_warns_when_all_alloys_are_continuous_and_milp_degenerates_to_lp():

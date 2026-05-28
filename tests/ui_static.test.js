@@ -5,9 +5,19 @@ const path = require('node:path');
 
 test('prototype.html 只接入后端求解入口，不再加载离线求解脚本', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'prototype.html'), 'utf8');
-  assert.match(html, /<script src="ui\.js"><\/script>/);
+  assert.match(html, /<script src="ui\.js\?v=[^"]+"><\/script>/);
+  assert.doesNotMatch(html, /<script src="ui\.js"><\/script>/);
   assert.match(html, /onclick="requestSolveRemote\(\)"/);
   assert.match(html, /点击计算/);
+  assert.match(html, /批量 Excel 计算/);
+  assert.match(html, /id="batchFile"/);
+  assert.match(html, /onclick="validateBatchTemplate\(\)"/);
+  assert.match(html, /onclick="runBatchOptimize\(\)"/);
+  assert.match(html, /onclick="exportBatchResult\(\)"/);
+  assert.doesNotMatch(html, /下载批量模板/);
+  assert.equal((html.match(/href="\/api\/template\/download"/g) || []).length, 1);
+  assert.match(html, /<details class="panel batch-panel"[^>]*aria-label="批量 Excel 计算"/);
+  assert.doesNotMatch(html, /<details class="panel batch-panel"[^>]*open/);
   assert.doesNotMatch(html, /手工录入，后端 FastAPI \+ HiGHS 求解/);
   assert.match(html, /backend calculator/);
   assert.doesNotMatch(html, /<script src="alloy_optimizer\.js"><\/script>/);
@@ -23,6 +33,35 @@ test('prototype.html 只接入后端求解入口，不再加载离线求解脚�
   assert.match(html, /id="comparisonBody"/);
   assert.match(html, /id="formulaPanel"/);
   assert.match(html, /<\/body>\s*<\/html>/);
+});
+
+test('页面文案不把路线明细误称为投料顺序', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'prototype.html'), 'utf8');
+  const script = fs.readFileSync(path.join(__dirname, '..', 'ui.js'), 'utf8');
+  const userFacingText = `${html}\n${script}`;
+  assert.doesNotMatch(userFacingText, /投料顺序/);
+  assert.match(userFacingText, /路线明细|成本路线|整袋方案/);
+  assert.match(userFacingText, /投料方式/);
+  assert.match(html, /<details class="panel batch-panel"[^>]*aria-label="批量 Excel 计算"/);
+  assert.doesNotMatch(html, /<details class="panel batch-panel"[^>]*open/);
+  assert.match(html, /onclick="validateBatchTemplate\(\)"/);
+  assert.match(script, /window\.validateBatchTemplate = validateBatchTemplate/);
+});
+
+test('路线明细按成本贡献排序而不是旧 sequence 排序', () => {
+  const script = fs.readFileSync(path.join(__dirname, '..', 'ui.js'), 'utf8');
+  assert.match(script, /Number\(b\.costPerTon \|\| 0\) - Number\(a\.costPerTon \|\| 0\)/);
+  assert.match(script, /left < right \? -1 : 1/);
+  assert.doesNotMatch(script, /localeCompare/);
+  assert.doesNotMatch(script, /a\.sequence - b\.sequence/);
+});
+
+test('静态首屏路线明细按成本贡献降序展示', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'prototype.html'), 'utf8');
+  const expectedOrder = ['硅锰', '低碳铬铁', '高碳铬铁', '低碳锰铁', '高碳锰铁', '硅铁'];
+  const positions = expectedOrder.map((name) => html.indexOf(`<div class="step-name">${name}</div>`));
+  assert.ok(positions.every((position) => position >= 0));
+  assert.deepEqual([...positions].sort((a, b) => a - b), positions);
 });
 
 test('合金参数使用滑钮表达连续投料和整袋投料', () => {
@@ -87,7 +126,7 @@ test('ui.js 调用后端 /api/optimize，不再调用浏览器离线求解器', 
   assert.doesNotMatch(script, /solveOffline|requestSolveOffline/);
 });
 
-test('页面支持点击选择三种方案并刷新对应加入顺序', () => {
+test('页面支持点击选择三种方案并刷新对应路线明细', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'prototype.html'), 'utf8');
   const script = fs.readFileSync(path.join(__dirname, '..', 'ui.js'), 'utf8');
   assert.match(html, /data-mode-key="milp"/);
@@ -102,7 +141,7 @@ test('页面支持点击选择三种方案并刷新对应加入顺序', () => {
   assert.match(script, /renderSelectedMode/);
   assert.match(script, /activeBoundNote/);
   assert.match(script, /window\.selectMode = selectMode/);
-  assert.match(script, /LP 是连续变量理论下限，不是现场整袋投料单/);
+  assert.match(script, /LP 是连续变量理论下限，不是现场整袋方案/);
   assert.match(script, /规则基线是系统按保守规则生成的对照方案/);
   assert.doesNotMatch(script, /成本变化 vs经验|规则基线（经验）/);
 });
@@ -152,9 +191,47 @@ test('ui.js 暴露可测试的 UI 纯函数', () => {
   assert.equal(typeof sandbox.window.AlloyCostUI.percentInRange, 'function');
   assert.equal(typeof sandbox.window.AlloyCostUI.readAlloyInputs, 'function');
   assert.equal(typeof sandbox.window.AlloyCostUI.requestConfig, 'function');
+  assert.equal(typeof sandbox.window.AlloyCostUI.requestValidateTemplate, 'function');
+  assert.equal(typeof sandbox.window.AlloyCostUI.requestBatchOptimize, 'function');
   assert.equal(typeof sandbox.window.AlloyCostUI.activeBoundNote, 'function');
   assert.equal(typeof sandbox.window.AlloyCostUI.syncControlTargetFields, 'function');
   assert.equal(typeof sandbox.window.selectMode, 'function');
+  assert.equal(typeof sandbox.window.validateBatchTemplate, 'function');
+  assert.equal(typeof sandbox.window.runBatchOptimize, 'function');
+  assert.equal(typeof sandbox.window.exportBatchResult, 'function');
+});
+
+test('批量 UI 调用模板预检和批量计算 API', async () => {
+  const vm = require('node:vm');
+  const script = fs.readFileSync(path.join(__dirname, '..', 'ui.js'), 'utf8');
+  const calls = [];
+  function MockFormData() {
+    this.items = [];
+  }
+  MockFormData.prototype.append = function append(key, value) {
+    this.items.push([key, value]);
+  };
+  const sandbox = {
+    window: {
+      FormData: MockFormData,
+      fetch(url, options) {
+        calls.push({ url, options });
+        const payload = url.includes('/api/template/validate')
+          ? { status: 'ok', errors: [], warnings: [], preview: { taskCount: 1, alloyCount: 2, priceCount: 3 }, parsed: { tasks: [] } }
+          : { batchId: 'batch-1', summary: { total: 1, success: 1, failed: 0 }, results: [] };
+        return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify(payload)) });
+      }
+    },
+    document: { addEventListener() {}, getElementById() { return null; }, querySelectorAll() { return []; } },
+  };
+  vm.runInNewContext(script, sandbox, { filename: 'ui.js' });
+  await sandbox.window.AlloyCostUI.requestValidateTemplate({ name: 'template.xlsx' });
+  await sandbox.window.AlloyCostUI.requestBatchOptimize({ tasks: [] });
+  assert.equal(calls[0].url, '/api/template/validate');
+  assert.equal(calls[0].options.method, 'POST');
+  assert.equal(calls[1].url, '/api/batch-optimize');
+  assert.equal(JSON.parse(calls[1].options.body).solver, 'highs');
+  assert.deepEqual(JSON.parse(calls[1].options.body).template, { tasks: [] });
 });
 
 test('控 Si/C 输入会写入 control_targets 并影响有效边界', () => {
@@ -245,6 +322,101 @@ test('质控提醒应提示控元素上限是否真正卡住当前解', () => {
   });
   assert.match(elements.qualityStrip.innerHTML, /C 控制上限未卡住当前解/);
   assert.match(elements.qualityStrip.innerHTML, /Si 控制上限未卡住当前解/);
+});
+
+test('质控提醒会转义后端 warning 文本', () => {
+  const vm = require('node:vm');
+  const script = fs.readFileSync(path.join(__dirname, '..', 'ui.js'), 'utf8');
+  const elements = { qualityStrip: { innerHTML: '' } };
+  const sandbox = {
+    window: {},
+    document: {
+      addEventListener() {},
+      getElementById(id) { return elements[id] || { value: '0', innerHTML: '', textContent: '', style: {}, className: '' }; },
+      querySelectorAll() { return []; },
+      querySelector() { return null; }
+    },
+  };
+  vm.runInNewContext(script, sandbox, { filename: 'ui.js' });
+
+  sandbox.window.AlloyCostUI.renderQuality({
+    warnings: ['<img src=x onerror=alert(1)>'],
+    modes: { milp: { chemistryChecks: [] } }
+  });
+
+  assert.doesNotMatch(elements.qualityStrip.innerHTML, /<img/);
+  assert.match(elements.qualityStrip.innerHTML, /&lt;img src=x onerror=alert\(1\)&gt;/);
+});
+
+test('批量问题和路线渲染会转义后端文本', () => {
+  const vm = require('node:vm');
+  const script = fs.readFileSync(path.join(__dirname, '..', 'ui.js'), 'utf8');
+  const elements = {
+    batchIssuesBody: { innerHTML: '' },
+    heatWeightBadge: { textContent: '' },
+    heroCost: { innerHTML: '' },
+    heroCostSub: { textContent: '' },
+    summaryGrid: { innerHTML: '' },
+    comparisonBody: { innerHTML: '' },
+    chemBadge: { textContent: '', className: '' },
+    chemList: { innerHTML: '' },
+    chemActiveNote: { textContent: '' },
+    sequenceTitle: { textContent: '' },
+    sequenceBadge: { textContent: '' },
+    sequenceList: { innerHTML: '' },
+    qualityStrip: { innerHTML: '' },
+    modeNote: { textContent: '' },
+    runStatus: { textContent: '', style: {} },
+  };
+  const sandbox = {
+    window: {},
+    document: {
+      addEventListener() {},
+      getElementById(id) { return elements[id] || { value: '0', innerHTML: '', textContent: '', style: {}, className: '' }; },
+      querySelectorAll() { return []; },
+      querySelector() { return null; }
+    },
+  };
+  vm.runInNewContext(script, sandbox, { filename: 'ui.js' });
+  sandbox.window.AlloyCostUI.setRuntimeConfigForTest({
+    heat_weight_t: 100,
+    target: { C: { min: 0, max: 1 } },
+    residual: {},
+    control_targets: { enabled: false },
+    safety_margins: {},
+    alloys: [],
+  });
+
+  sandbox.window.AlloyCostUI.renderBatchIssues(
+    [{ sheet: '<img src=x onerror=alert(1)>', row: 2, field: '字段', message: '<img src=x onerror=alert(1)>', suggestion: '<img src=x onerror=alert(1)>' }],
+    []
+  );
+  sandbox.window.AlloyCostUI.renderResult(
+    { heat_weight_t: 100, target: { C: { min: 0, max: 1 } }, safety_margins: {} },
+    {
+      ruleFeasible: true,
+      costDeltaRateVsRule: 0,
+      costDeltaVsRule: 0,
+      savingsVsRule: 0,
+      warnings: [],
+      modes: {
+        rule: { costPerTon: 1, alloys: [{ name: '<img src=x onerror=alert(1)>', kgPerTon: 1 }], chemistryChecks: [], chemistry: { C: 0.1 } },
+        lp: { costPerTon: 1, alloys: [{ name: '<img src=x onerror=alert(1)>', kgPerTon: 1 }], chemistryChecks: [], chemistry: { C: 0.1 } },
+        milp: {
+          costPerTon: 1,
+          heatCost: 100,
+          totalKgPerTon: 1,
+          alloys: [{ name: '<img src=x onerror=alert(1)>', kgPerTon: 1, heatKg: 100, bags: null, costPerTon: 1 }],
+          chemistryChecks: [{ element: '<img src=x onerror=alert(1)>', value: 0.1, min: 0, max: 1, ok: true }],
+          chemistry: { C: 0.1 },
+        },
+      },
+    }
+  );
+
+  const rendered = [elements.batchIssuesBody.innerHTML, elements.comparisonBody.innerHTML, elements.sequenceList.innerHTML, elements.chemList.innerHTML].join('\n');
+  assert.doesNotMatch(rendered, /<img/);
+  assert.match(rendered, /&lt;img src=x onerror=alert\(1\)&gt;/);
 });
 
 test('成分校核能提示贴边约束', () => {

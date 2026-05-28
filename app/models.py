@@ -21,6 +21,13 @@ class OptimizeRequest(BaseModel):
     )
 
 
+class BatchOptimizeRequest(BaseModel):
+    """批量模板预检通过后的求解请求。"""
+
+    template: dict[str, Any] = Field(..., description="由 /api/template/validate 返回的 parsed 数据。")
+    solver: Literal["internal", "highs", "scipy", "ortools"] = Field(default="highs", description="批量求解器选择。")
+
+
 class OptimizeResponse(BaseModel):
     """统一优化响应。"""
 

@@ -6,12 +6,13 @@ import json
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
+from app.batch_template import BATCH_RESULTS, export_batch_result, generate_template_workbook, parse_template_workbook, run_batch_optimization
 from app.core import OptimizerError, solve_alloy_cost
-from app.models import HealthResponse, OptimizeRequest
+from app.models import BatchOptimizeRequest, HealthResponse, OptimizeRequest
 from app.solvers import get_solver
 
 
@@ -120,6 +121,18 @@ def get_config() -> dict:
         raise HTTPException(status_code=500, detail=f"配置 JSON 格式错误：{exc}") from exc
 
 
+@app.get("/api/template/download")
+def download_template() -> Response:
+    """下载系统推荐的批量计算 Excel 模板。"""
+
+    content = generate_template_workbook()
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="alloy-batch-template-v1.xlsx"'},
+    )
+
+
 @app.post("/api/optimize")
 def optimize(request: OptimizeRequest) -> dict:
     """根据业务配置返回规则、LP、MILP 三种合金成本方案。"""
@@ -133,3 +146,40 @@ def optimize(request: OptimizeRequest) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/template/validate")
+async def validate_template(file: UploadFile = File(...)) -> dict:
+    """上传批量计算模板，只做结构解析和预检。"""
+
+    if not (file.filename or "").lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="请上传 .xlsx 模板文件")
+    content = await file.read()
+    return parse_template_workbook(content)
+
+
+@app.post("/api/batch-optimize")
+def batch_optimize(request: BatchOptimizeRequest) -> dict:
+    """对预检通过的模板数据逐行求解。"""
+
+    try:
+        return run_batch_optimization(request.template, request.solver)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/batch-result/{batch_id}/export")
+def export_batch(batch_id: str) -> Response:
+    """导出批量计算结果。"""
+
+    result = BATCH_RESULTS.get(batch_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="批量结果不存在或已过期")
+    content = export_batch_result(result)
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="alloy-batch-result-{batch_id}.xlsx"'},
+    )

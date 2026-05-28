@@ -13,7 +13,8 @@ from typing import Any
 from app.solvers.base import RawSolution, Solver
 
 
-ELEMENTS = ["C", "Si", "Mn", "Cr", "P", "S"]
+BASE_ELEMENTS = ["C", "Si", "Mn", "Cr", "P", "S"]
+ELEMENTS = BASE_ELEMENTS
 EPS = 1e-8
 
 
@@ -105,6 +106,35 @@ def alloy_coeff(alloy: dict[str, Any], element: str, config: dict[str, Any]) -> 
     return percent * rate / 1000
 
 
+def active_elements(config: dict[str, Any], alloys: list[dict[str, Any]] | None = None) -> list[str]:
+    """返回本次求解实际参与约束和校核的元素集合。"""
+
+    ignored = set(config.get("ignored_elements") or [])
+    ordered: list[str] = []
+
+    def add(element: str) -> None:
+        if element and element not in ignored and element not in ordered:
+            ordered.append(element)
+
+    for element in BASE_ELEMENTS:
+        add(element)
+    for source in (
+        config.get("target") or {},
+        config.get("residual") or {},
+        config.get("recovery_rates") or {},
+        config.get("safety_margins") or {},
+        (config.get("control_targets") or {}).get("elements") or {},
+    ):
+        for element in source:
+            add(element)
+    for alloy in alloys if alloys is not None else config.get("alloys") or []:
+        for element in (alloy.get("composition") or {}):
+            add(element)
+        for element in (alloy.get("recovery_overrides") or {}):
+            add(element)
+    return ordered
+
+
 def validate_config(config: dict[str, Any]) -> None:
     """校验配置单位和范围，错误配置必须在求解前死掉。"""
 
@@ -194,13 +224,29 @@ def build_linear_model(config: dict[str, Any], alloys: list[dict[str, Any]], fix
 
     constraints: list[dict[str, Any]] = []
     residual = config.get("residual") or {}
-    for element in ELEMENTS:
+    for element in active_elements(config, alloys):
         bounds = effective_bounds(config, element)
         coeff = [alloy_coeff(alloy, element, config) for alloy in alloys]
         if bounds["max"] is not None:
-            constraints.append({"a": coeff, "b": bounds["max"] - float(residual.get(element) or 0), "label": f"{element}上限"})
+            constraints.append(
+                {
+                    "a": coeff,
+                    "b": bounds["max"] - float(residual.get(element) or 0),
+                    "label": f"{element}上限",
+                    "element": element,
+                    "side": "max",
+                }
+            )
         if bounds["min"] is not None:
-            constraints.append({"a": [-value for value in coeff], "b": -(bounds["min"] - float(residual.get(element) or 0)), "label": f"{element}下限"})
+            constraints.append(
+                {
+                    "a": [-value for value in coeff],
+                    "b": -(bounds["min"] - float(residual.get(element) or 0)),
+                    "label": f"{element}下限",
+                    "element": element,
+                    "side": "min",
+                }
+            )
 
     model_bounds: list[tuple[float, float]] = []
     fixed_bounds = fixed_bounds or {}
@@ -230,7 +276,7 @@ def solve_alloy_cost(input_config: dict[str, Any], solver: Solver) -> dict[str, 
 
     lp_raw = solver.solve_lp(build_linear_model(config, alloys).as_dict())
     if lp_raw is None:
-        return {"status": "infeasible", "solver": solver.name, "diagnostics": diagnose_infeasible(config, alloys)}
+        return {"status": "infeasible", "solver": solver.name, "diagnostics": diagnose_infeasible(config, alloys, solver)}
 
     if (config.get("milp_settings") or {}).get("enable_bag_rounding") is False:
         milp_raw = lp_raw
@@ -331,7 +377,7 @@ def can_add(config: dict[str, Any], alloys: list[dict[str, Any]], doses: dict[st
     if next_doses[alloy_name] > float(alloy["max_add_kg_per_t"]) + EPS:
         return False
     chemistry = chemistry_from_doses(config, alloys, next_doses)
-    for element in ELEMENTS:
+    for element in active_elements(config, alloys):
         bounds = effective_bounds(config, element)
         if bounds["max"] is not None and chemistry[element] > bounds["max"] + 1e-6:
             return False
@@ -354,10 +400,10 @@ def chemistry_from_vector(config: dict[str, Any], alloys: list[dict[str, Any]], 
 def chemistry_from_doses(config: dict[str, Any], alloys: list[dict[str, Any]], doses: dict[str, float]) -> dict[str, float]:
     """根据合金投加量反算成分。"""
 
-    chemistry = {element: float((config.get("residual") or {}).get(element) or 0) for element in ELEMENTS}
+    chemistry = {element: float((config.get("residual") or {}).get(element) or 0) for element in active_elements(config, alloys)}
     for alloy in alloys:
         kg_per_ton = float(doses.get(alloy["name"]) or 0)
-        for element in ELEMENTS:
+        for element in chemistry:
             overrides = alloy.get("recovery_overrides") or {}
             recovery_rates = config.get("recovery_rates") or {}
             rate = float(overrides[element] if element in overrides else recovery_rates.get(element, 1))
@@ -412,7 +458,7 @@ def chemistry_checks(config: dict[str, Any], chemistry: dict[str, float]) -> lis
     """检查每个元素是否落在有效成分边界内。"""
 
     checks = []
-    for element in ELEMENTS:
+    for element in active_elements(config):
         bounds = effective_bounds(config, element)
         value = chemistry.get(element) or 0
         above_min = bounds["min"] is None or value >= bounds["min"] - 1e-7
@@ -421,11 +467,11 @@ def chemistry_checks(config: dict[str, Any], chemistry: dict[str, float]) -> lis
     return checks
 
 
-def diagnose_infeasible(config: dict[str, Any], alloys: list[dict[str, Any]]) -> list[str]:
+def diagnose_infeasible(config: dict[str, Any], alloys: list[dict[str, Any]], solver: Solver | None = None) -> list[str]:
     """给出简单可解释的无可行解诊断。"""
 
     diagnostics: list[str] = []
-    for element in ELEMENTS:
+    for element in active_elements(config, alloys):
         bounds = effective_bounds(config, element)
         residual = float((config.get("residual") or {}).get(element) or 0)
         max_reach = residual + sum(float(alloy["max_add_kg_per_t"]) * alloy_coeff(alloy, element, config) for alloy in alloys)
@@ -434,8 +480,66 @@ def diagnose_infeasible(config: dict[str, Any], alloys: list[dict[str, Any]]) ->
         if bounds["max"] is not None and residual > bounds["max"] + EPS:
             diagnostics.append(f"{element}上限无法满足：残余 {format_number(residual, 4)}%，上限 {format_number(bounds['max'], 4)}%")
     if not diagnostics:
+        diagnostics.extend(diagnose_coupled_element_limits(config, alloys, solver))
+    if not diagnostics:
         diagnostics.append("线性约束组合无可行解，请检查 C 上限、Mn/Cr 下限与启用合金组合")
     return diagnostics
+
+
+def diagnose_coupled_element_limits(config: dict[str, Any], alloys: list[dict[str, Any]], solver: Solver | None) -> list[str]:
+    """排除当前元素约束后，检查其他元素约束是否已限制其可达边界。"""
+
+    if solver is None:
+        return []
+
+    diagnostics: list[str] = []
+    base_model = build_linear_model(config, alloys).as_dict()
+    for element in active_elements(config, alloys):
+        bounds = effective_bounds(config, element)
+        if bounds["min"] is None and bounds["max"] is None:
+            continue
+
+        if bounds["min"] is not None:
+            max_value = solve_element_limit_under_other_constraints(config, alloys, solver, element, maximize=True, base_model=base_model)
+            if max_value is not None and max_value < bounds["min"] - EPS:
+                diagnostics.append(
+                    f"{element}在其他元素约束下最多只能到 {format_number(max_value, 4)}%，"
+                    f"低于下限 {format_number(bounds['min'], 4)}%"
+                )
+
+        if bounds["max"] is not None:
+            min_value = solve_element_limit_under_other_constraints(config, alloys, solver, element, maximize=False, base_model=base_model)
+            if min_value is not None and min_value > bounds["max"] + EPS:
+                diagnostics.append(
+                    f"{element}在其他元素约束下最少也会到 {format_number(min_value, 4)}%，"
+                    f"高于上限 {format_number(bounds['max'], 4)}%"
+                )
+    return diagnostics
+
+
+def solve_element_limit_under_other_constraints(
+    config: dict[str, Any],
+    alloys: list[dict[str, Any]],
+    solver: Solver,
+    element: str,
+    maximize: bool,
+    base_model: dict[str, Any] | None = None,
+) -> float | None:
+    """在排除当前元素上下限后，求该元素最终成分的理论边界。"""
+
+    base_model = base_model or build_linear_model(config, alloys).as_dict()
+    coeff = [alloy_coeff(alloy, element, config) for alloy in alloys]
+    objective = [-value for value in coeff] if maximize else coeff
+    model = {
+        "c": objective,
+        "constraints": [item for item in base_model["constraints"] if item.get("element") != element],
+        "bounds": base_model["bounds"],
+    }
+    raw = solver.solve_lp(model)
+    if raw is None:
+        return None
+    residual = float((config.get("residual") or {}).get(element) or 0)
+    return residual + sum((raw.x[index] or 0) * coeff[index] for index in range(len(alloys)))
 
 
 def warnings_for(config: dict[str, Any], result: dict[str, Any]) -> list[str]:
