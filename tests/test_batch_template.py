@@ -5,7 +5,7 @@ from io import BytesIO
 import openpyxl
 from fastapi.testclient import TestClient
 
-from app.batch_template import export_batch_result, generate_template_workbook, parse_template_workbook, run_batch_optimization
+from app.batch_template import TEMPLATE_ELEMENTS, export_batch_result, generate_template_workbook, parse_template_workbook, run_batch_optimization
 from app.main import app
 
 
@@ -196,6 +196,23 @@ def test_download_template_uses_feed_mode_without_addition_sequence():
     assert "整袋" in rules_text
     assert "路线序号" in rules_text
     assert "真实投料顺序优化" not in rules_text
+
+
+def test_download_template_uses_requested_element_scope():
+    workbook = openpyxl.load_workbook(BytesIO(generate_template_workbook()), data_only=True)
+    target_headers = [cell.value for cell in workbook["02_目标成分上下限"][1]]
+    endpoint_headers = [cell.value for cell in workbook["03_转炉终点与回收率"][1]]
+    alloy_headers = [cell.value for cell in workbook["04_合金成分库"][1]]
+    rules_text = "\n".join(str(row[1].value or "") for row in workbook["06_填写说明与校验规则"].iter_rows(min_row=1, max_col=2))
+
+    assert target_headers[4:] == [header for element in TEMPLATE_ELEMENTS for header in (f"{element}下限", f"{element}上限")]
+    assert endpoint_headers[4 : 4 + len(TEMPLATE_ELEMENTS)] == [f"{element}终点" for element in TEMPLATE_ELEMENTS]
+    assert endpoint_headers[4 + len(TEMPLATE_ELEMENTS) :] == [f"{element}回收率" for element in TEMPLATE_ELEMENTS]
+    assert alloy_headers[6:-1] == TEMPLATE_ELEMENTS
+    assert "N上限" not in target_headers
+    assert "N回收率" not in endpoint_headers
+    assert "N" not in alloy_headers
+    assert "旧模板里的 N 上传时会被忽略" in rules_text
 
 
 def test_feed_mode_continuous_allows_blank_or_zero_bag_size():

@@ -17,6 +17,8 @@ from app.solvers import get_solver
 
 TEMPLATE_VERSION = "1"
 IGNORED_ELEMENTS = {"N"}
+TEMPLATE_ELEMENTS = ["C", "Si", "Mn", "P", "S", "V", "Nb", "Ti", "Als", "Alt", "Cr", "Ni", "Cu", "Mo", "B", "Sb"]
+ERROR_FIELD_ELEMENTS = ["P", "S"] + [element for element in TEMPLATE_ELEMENTS if element not in {"P", "S"}]
 DEFAULT_RECOVERY_RATES = {"C": 0.9, "P": 1.0, "S": 1.0}
 BUSINESS_SHEETS = [
     "01_批量任务",
@@ -44,6 +46,13 @@ def generate_template_workbook() -> bytes:
     workbook = openpyxl.Workbook()
     workbook.remove(workbook.active)
 
+    q235b_target = {"C": {"min": 0.06, "max": 0.16}, "Si": {"min": 0.05, "max": 0.12}, "Mn": {"min": 0.20, "max": 0.40}, "P": {"max": 0.025}, "S": {"max": 0.020}}
+    q355c_target = {"C": {"min": 0.08, "max": 0.16}, "Si": {"min": 0.10, "max": 0.20}, "Mn": {"min": 0.90, "max": 1.20}, "P": {"max": 0.018}, "S": {"max": 0.010}}
+    q235b_residual = {"C": 0.07, "Mn": 0.12, "Cr": 0}
+    q355c_residual = {"C": 0.07, "Mn": 0.11, "Cr": 0}
+    q235b_recovery = {"C": 0.90, "Si": 0.75, "Mn": 0.98, "P": 1.00, "S": 1.00, "Cr": 0.96}
+    q355c_recovery = {"C": 0.90, "Si": 0.80, "Mn": 0.98, "P": 1.00, "S": 1.00, "Cr": 0.96}
+
     create_sheet(
         workbook,
         "01_批量任务",
@@ -58,25 +67,9 @@ def generate_template_workbook() -> bytes:
         workbook,
         "02_目标成分上下限",
         [
-            [
-                "适用牌号",
-                "最小厚度mm",
-                "最大厚度mm",
-                "炼钢牌号",
-                "C下限",
-                "C上限",
-                "Si下限",
-                "Si上限",
-                "Mn下限",
-                "Mn上限",
-                "Cr下限",
-                "Cr上限",
-                "P上限",
-                "S上限",
-                "N上限",
-            ],
-            ["Q235B", 1.5, 12, "Q235B-1", 0.06, 0.16, 0.05, 0.12, 0.20, 0.40, None, None, 0.025, 0.020, 60],
-            ["Q355C", 3, 12, "Q355C-1", 0.08, 0.16, 0.10, 0.20, 0.90, 1.20, None, None, 0.018, 0.010, 40],
+            ["适用牌号", "最小厚度mm", "最大厚度mm", "炼钢牌号", *element_bound_headers()],
+            ["Q235B", 1.5, 12, "Q235B-1", *element_bound_values(q235b_target)],
+            ["Q355C", 3, 12, "Q355C-1", *element_bound_values(q355c_target)],
         ],
         {"A": 14, "B": 14, "C": 14, "D": 16},
     )
@@ -84,9 +77,9 @@ def generate_template_workbook() -> bytes:
         workbook,
         "03_转炉终点与回收率",
         [
-            ["适用牌号", "最小厚度mm", "最大厚度mm", "炼钢牌号", "C终点", "Mn终点", "Cr终点", "Si回收率", "Mn回收率", "Cr回收率"],
-            ["Q235B", 1.5, 12, "Q235B-1", 0.07, 0.12, 0, 0.75, 0.98, 0.96],
-            ["Q355C", 3, 12, "Q355C-1", 0.07, 0.11, 0, 0.80, 0.98, 0.96],
+            ["适用牌号", "最小厚度mm", "最大厚度mm", "炼钢牌号", *element_endpoint_headers(), *element_recovery_headers()],
+            ["Q235B", 1.5, 12, "Q235B-1", *element_values(q235b_residual), *element_values(q235b_recovery)],
+            ["Q355C", 3, 12, "Q355C-1", *element_values(q355c_residual), *element_values(q355c_recovery)],
         ],
         {"A": 14, "B": 14, "C": 14, "D": 16},
     )
@@ -94,16 +87,16 @@ def generate_template_workbook() -> bytes:
         workbook,
         "04_合金成分库",
         [
-            ["合金名称", "价格物料名", "启用", "投料方式", "袋重kg", "最大投加kg每t", "C", "Si", "Mn", "Cr", "P", "S", "N", "备注"],
-            ["硅锰", "硅锰", "是", "连续", 0, 30, 1.72, 17.69, 65.66, None, 0.15, 0.02, 80, "N 不参与优化"],
-            ["高碳锰铁", "高碳锰铁", "是", "整袋", 25, 25, 6.69, None, 74.60, None, 0.20, 0.02, None, ""],
-            ["中碳锰铁", "中碳锰铁", "是", "整袋", 25, 25, 1.50, None, 78.54, None, 0.20, 0.02, None, ""],
-            ["低碳锰铁", "低碳锰铁", "是", "整袋", 25, 25, 0.64, None, 81.19, None, 0.20, 0.02, None, ""],
-            ["硅铁", "硅铁", "是", "连续", 0, 20, 0.20, 72.23, None, None, 0.03, 0.02, None, ""],
-            ["高碳铬铁", "高碳铬铁", "是", "连续", 0, 20, 10.00, None, None, 52.00, 0.03, 0.04, None, ""],
-            ["低碳铬铁", "低碳铬铁", "是", "连续", 0, 20, 0.12, None, None, 59.44, 0.03, 0.03, None, ""],
+            ["合金名称", "价格物料名", "启用", "投料方式", "袋重kg", "最大投加kg每t", *TEMPLATE_ELEMENTS, "备注"],
+            ["硅锰", "硅锰", "是", "连续", 0, 30, *element_values({"C": 1.72, "Si": 17.69, "Mn": 65.66, "P": 0.15, "S": 0.02}), ""],
+            ["高碳锰铁", "高碳锰铁", "是", "整袋", 25, 25, *element_values({"C": 6.69, "Mn": 74.60, "P": 0.20, "S": 0.02}), ""],
+            ["中碳锰铁", "中碳锰铁", "是", "整袋", 25, 25, *element_values({"C": 1.50, "Mn": 78.54, "P": 0.20, "S": 0.02}), ""],
+            ["低碳锰铁", "低碳锰铁", "是", "整袋", 25, 25, *element_values({"C": 0.64, "Mn": 81.19, "P": 0.20, "S": 0.02}), ""],
+            ["硅铁", "硅铁", "是", "连续", 0, 20, *element_values({"C": 0.20, "Si": 72.23, "P": 0.03, "S": 0.02}), ""],
+            ["高碳铬铁", "高碳铬铁", "是", "连续", 0, 20, *element_values({"C": 10.00, "P": 0.03, "S": 0.04, "Cr": 52.00}), ""],
+            ["低碳铬铁", "低碳铬铁", "是", "连续", 0, 20, *element_values({"C": 0.12, "P": 0.03, "S": 0.03, "Cr": 59.44}), ""],
         ],
-        {"A": 14, "B": 14, "C": 10, "D": 12, "E": 10, "F": 16, "N": 28},
+        {"A": 14, "B": 14, "C": 10, "D": 12, "E": 10, "F": 16, "W": 28},
     )
     create_sheet(
         workbook,
@@ -128,8 +121,8 @@ def generate_template_workbook() -> bytes:
             ["填写流程", "下载模板 -> 填业务数据 -> 上传预检 -> 预检通过后批量计算 -> 导出结果"],
             ["单位规则", "成分按百分数数值填写，例如 0.23 表示 0.23%；合金品位 65.66 表示 65.66%。"],
             ["合金用量公式", "kg/t = (目标成分 - 转炉终点成分) / 合金品位 / 回收率 * 1000"],
-            ["N 元素", "N 不参与合金优化；保留时只作为质量备注字段。"],
-            ["P/S 规则", "P/S 只能作为上限约束；转炉终点已超过上限时任务直接失败。"],
+            ["标准元素", "标准模板仅保留 C, Si, Mn, P, S, V, Nb, Ti, Als, Alt, Cr, Ni, Cu, Mo, B, Sb；旧模板里的 N 上传时会被忽略。"],
+            ["P/S 规则", "P/S 通常只填写上限；转炉终点已超过上限时任务直接失败。"],
             ["投料方式", "投料方式只能填写 连续 或 整袋；连续物料袋重kg留空或填 0，整袋物料袋重kg必须大于 0。"],
             ["路线序号", "最优路线明细中的路线序号只表示导出排序，从 1 开始，按成本贡献降序排列；它不是现场真实投料顺序。"],
             ["禁止内容", "业务输入区不允许合并单元格、公式、空表头、重复表头、隐藏必填列。"],
@@ -172,6 +165,30 @@ def style_template_sheet(sheet, widths: dict[str, int]) -> None:
         if width is None:
             width = min(18, max(10, max(len(str(cell.value or "")) for cell in column_cells) + 2))
         sheet.column_dimensions[letter].width = width
+
+
+def element_bound_headers() -> list[str]:
+    return [header for element in TEMPLATE_ELEMENTS for header in (f"{element}下限", f"{element}上限")]
+
+
+def element_bound_values(values_by_element: dict[str, dict[str, float]]) -> list[float | None]:
+    values: list[float | None] = []
+    for element in TEMPLATE_ELEMENTS:
+        spec = values_by_element.get(element) or {}
+        values.extend([spec.get("min"), spec.get("max")])
+    return values
+
+
+def element_endpoint_headers() -> list[str]:
+    return [f"{element}终点" for element in TEMPLATE_ELEMENTS]
+
+
+def element_recovery_headers() -> list[str]:
+    return [f"{element}回收率" for element in TEMPLATE_ELEMENTS]
+
+
+def element_values(values_by_element: dict[str, float]) -> list[float | None]:
+    return [values_by_element.get(element) for element in TEMPLATE_ELEMENTS]
 
 
 def parse_template_workbook(content: bytes) -> dict:
@@ -716,7 +733,7 @@ def business_key(row: dict, sheet: str, errors: list[dict]) -> dict:
 def optimizer_error_to_issue(task: dict, exc: OptimizerError) -> dict:
     details = exc.details or [str(exc)]
     field = None
-    for element in ("P", "S", "C", "Si", "Mn", "Cr"):
+    for element in ERROR_FIELD_ELEMENTS:
         if any(element in detail for detail in details):
             field = element
             break
