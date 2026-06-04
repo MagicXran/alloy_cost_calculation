@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import Path
 
 import openpyxl
 from fastapi.testclient import TestClient
@@ -14,6 +15,10 @@ def workbook_bytes(
     duplicate_target: bool = False,
     merge_tasks: bool = False,
     formula_price: bool = False,
+    task_rows: list[list] | None = None,
+    target_header: list[str] | None = None,
+    target_rows: list[list] | None = None,
+    endpoint_rows: list[list] | None = None,
     alloy_header: list[str] | None = None,
     alloy_rows: list[list] | None = None,
 ) -> bytes:
@@ -24,35 +29,37 @@ def workbook_bytes(
 
     tasks = wb.create_sheet("01_批量任务")
     tasks.append(["任务编号", "适用牌号", "厚度mm", "炉重t", "价格方案", "炼钢牌号", "备注"])
-    tasks.append(["T001", "Q235B", 10, 150, "2026-05", "Q235B-1", "正常样例"])
-    tasks.append(["T002", "Q355C", 8, 150, "2026-05", "Q355C-1", "低合金样例"])
+    for row in task_rows or [
+        ["T001", "Q235B", 10, 150, "2026-05", "Q235B-1", "正常样例"],
+        ["T002", "Q355C", 8, 150, "2026-05", "Q355C-1", "低合金样例"],
+    ]:
+        tasks.append(row)
     if merge_tasks:
         tasks.merge_cells("A2:B2")
 
     targets = wb.create_sheet("02_目标成分上下限")
-    targets.append(
-        [
-            "适用牌号",
-            "最小厚度mm",
-            "最大厚度mm",
-            "炼钢牌号",
-            "C下限",
-            "C上限",
-            "Si下限",
-            "Si上限",
-            "Mn下限",
-            "Mn上限",
-            "Cr下限",
-            "Cr上限",
-            "P上限",
-            "S上限",
-            "N上限",
-        ]
-    )
-    targets.append(["Q235B", 1.5, 12, "Q235B-1", 0.06, 0.16, 0.05, 0.12, 0.20, 0.40, None, None, 0.025, 0.020, 60])
+    default_target_header = [
+        "适用牌号",
+        "最小厚度mm",
+        "最大厚度mm",
+        "炼钢牌号",
+        "C下限",
+        "C上限",
+        "Si下限",
+        "Si上限",
+        "Mn下限",
+        "Mn上限",
+        "P上限",
+        "S上限",
+    ]
+    targets.append(target_header or default_target_header)
+    for row in target_rows or [
+        ["Q235B", 1.5, 12, "Q235B-1", None, 0.16, None, 0.05, 0.20, 0.22, 0.025, 0.020],
+        ["Q355C", 3, 12, "Q355C-1", None, 0.16, 0.10, 0.12, 0.90, 0.92, 0.018, 0.010],
+    ]:
+        targets.append(row)
     if duplicate_target:
-        targets.append(["Q235B", 1.5, 12, "Q235B-1", 0.06, 0.16, 0.05, 0.12, 0.20, 0.40, None, None, 0.025, 0.020, 60])
-    targets.append(["Q355C", 3, 12, "Q355C-1", 0.08, 0.16, 0.10, 0.20, 0.90, 1.20, None, None, 0.018, 0.010, 40])
+        targets.append(["Q235B-重复", 99, 100, "Q235B-1", None, 0.16, None, 0.05, 0.20, 0.22, 0.025, 0.020])
 
     endpoints = wb.create_sheet("03_转炉终点与回收率")
     endpoints.append(
@@ -66,11 +73,25 @@ def workbook_bytes(
             "Cr终点",
             "Si回收率",
             "Mn回收率",
+            "V回收率",
+            "Nb回收率",
+            "Ti回收率",
+            "Als回收率",
+            "Alt回收率",
+            "Ca回收率",
             "Cr回收率",
+            "Ni回收率",
+            "Cu回收率",
+            "Mo回收率",
+            "B回收率",
+            "Sb回收率",
         ]
     )
-    endpoints.append(["Q235B", 1.5, 12, "Q235B-1", 0.07, 0.12, 0, 0.75, 0.98, 0.96])
-    endpoints.append(["Q355C", 3, 12, "Q355C-1", 0.07, 0.11, 0, 0.80, 0.98, 0.96])
+    for row in endpoint_rows or [
+        ["Q235B", 1.5, 12, "Q235B-1", 0.07, 0.12, 0, 0.75, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+        ["Q355C", 3, 12, "Q355C-1", 0.07, 0.11, 0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+    ]:
+        endpoints.append(row)
 
     alloys = wb.create_sheet("04_合金成分库")
     default_alloy_header = ["合金名称", "价格物料名", "启用", "投料方式", "袋重kg", "最大投加kg每t", "C", "Si", "Mn", "Cr", "P", "S", "N", "备注"]
@@ -110,6 +131,223 @@ def test_parse_template_workbook_builds_prevalidated_payload():
     assert report["parsed"]["tasks"][0]["config"]["residual"]["Si"] == 0
 
 
+def test_single_target_values_expand_to_bounds_with_element_margins():
+    report = parse_template_workbook(
+        workbook_bytes(
+            target_header=[
+                "适用牌号",
+                "最小厚度mm",
+                "最大厚度mm",
+                "炼钢牌号",
+                "C目标",
+                "Si目标",
+                "Mn目标",
+                "P目标",
+                "S目标",
+                "V目标",
+                "Nb目标",
+                "Ti目标",
+                "Als目标",
+                "Alt目标",
+                "Ca目标",
+                "Cr目标",
+                "Ni目标",
+                "Cu目标",
+                "Mo目标",
+                "B目标",
+                "Sb目标",
+            ],
+            target_rows=[
+                ["Q235B", 1.5, 12, "Q235B-1", 0.16, 0.05, 0.20, 0.025, 0.020, None, None, None, 0.010, None, None, None, None, None, None, None, None],
+                ["Q355C", 3, 12, "Q355C-1", 0.16, 0.10, 0.90, 0.018, 0.010, 0.030, 0.020, 0.025, None, 0.030, 0.004, 0.20, 0.10, 0.10, 0.05, 0.002, 0.03],
+            ]
+        )
+    )
+
+    assert report["status"] == "ok"
+    q235b_target = report["parsed"]["tasks"][0]["config"]["target"]
+    q355c_target = report["parsed"]["tasks"][1]["config"]["target"]
+
+    assert q235b_target["C"] == {"max": 0.16}
+    assert q235b_target["Si"] == {"max": 0.05}
+    assert q235b_target["Mn"] == {"min": 0.20, "max": 0.22}
+    assert q235b_target["P"] == {"max": 0.025}
+    assert q235b_target["S"] == {"max": 0.020}
+    assert q235b_target["Als"] == {"min": 0.010, "max": 0.015}
+    assert q355c_target["Si"] == {"min": 0.10, "max": 0.12}
+    assert q355c_target["V"] == {"min": 0.030, "max": 0.031}
+    assert q355c_target["Nb"] == {"min": 0.020, "max": 0.021}
+    assert q355c_target["Ti"] == {"min": 0.025, "max": 0.030}
+    assert q355c_target["Alt"] == {"min": 0.030, "max": 0.035}
+    assert q355c_target["Ca"] == {"min": 0.004, "max": 0.004}
+    assert q355c_target["Cr"] == {"min": 0.20, "max": 0.23}
+    assert q355c_target["Ni"] == {"min": 0.10, "max": 0.11}
+    assert q355c_target["Cu"] == {"min": 0.10, "max": 0.11}
+    assert q355c_target["Mo"] == {"min": 0.05, "max": 0.06}
+    assert q355c_target["B"] == {"min": 0.002, "max": 0.0022}
+    assert q355c_target["Sb"] == {"min": 0.03, "max": 0.04}
+
+
+def test_non_element_target_headers_are_ignored():
+    report = parse_template_workbook(
+        workbook_bytes(
+            target_header=[
+                "适用牌号",
+                "最小厚度mm",
+                "最大厚度mm",
+                "炼钢牌号",
+                "C目标",
+                "Si目标",
+                "Mn目标",
+                "P目标",
+                "S目标",
+                "成本目标",
+                "产量目标",
+            ],
+            target_rows=[
+                ["Q235B", 1.5, 12, "Q235B-1", 0.16, 0.05, 0.20, 0.025, 0.020, 6100, 150],
+                ["Q355C", 3, 12, "Q355C-1", 0.16, 0.10, 0.90, 0.018, 0.010, 6500, 160],
+            ],
+        )
+    )
+
+    assert report["status"] == "ok"
+    target = report["parsed"]["tasks"][0]["config"]["target"]
+    assert "成本" not in target
+    assert "产量" not in target
+
+
+def test_single_target_and_legacy_bounds_for_same_element_conflict():
+    report = parse_template_workbook(
+        workbook_bytes(
+            target_header=[
+                "适用牌号",
+                "最小厚度mm",
+                "最大厚度mm",
+                "炼钢牌号",
+                "Mn目标",
+                "Mn下限",
+                "Mn上限",
+                "P目标",
+                "S目标",
+            ],
+            target_rows=[
+                ["Q235B", 1.5, 12, "Q235B-1", 0.20, 0.10, 0.30, 0.025, 0.020],
+                ["Q355C", 3, 12, "Q355C-1", 0.90, None, None, 0.018, 0.010],
+            ],
+        )
+    )
+
+    assert report["status"] == "error"
+    assert any(error["code"] == "TARGET_COLUMN_CONFLICT" and error["field"] == "Mn" for error in report["errors"])
+
+
+def test_target_and_endpoint_steelmaking_grade_must_be_unique_across_sheet():
+    report = parse_template_workbook(
+        workbook_bytes(
+            target_rows=[
+                ["Q235B", 1.5, 12, "Q235B-1", None, 0.16, None, 0.05, 0.20, 0.22, 0.025, 0.020],
+                ["Q355C", 3, 12, "Q355C-1", None, 0.16, 0.10, 0.12, 0.90, 0.92, 0.018, 0.010],
+                ["未引用重复", 1, 2, "UNUSED-DUP", None, 0.16, None, 0.05, 0.20, 0.22, 0.025, 0.020],
+                ["未引用重复2", 3, 4, "UNUSED-DUP", None, 0.16, None, 0.05, 0.20, 0.22, 0.025, 0.020],
+            ],
+            endpoint_rows=[
+                ["Q235B", 1.5, 12, "Q235B-1", 0.07, 0.12, 0, 0.75, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+                ["Q355C", 3, 12, "Q355C-1", 0.07, 0.11, 0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+                ["未引用重复", 1, 2, "UNUSED-ENDPOINT-DUP", 0.07, 0.11, 0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+                ["未引用重复2", 3, 4, "UNUSED-ENDPOINT-DUP", 0.07, 0.11, 0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+            ],
+        )
+    )
+
+    assert report["status"] == "error"
+    assert any(error["code"] == "DUPLICATE_STEELMAKING_GRADE" and error["sheet"] == "02_目标成分上下限" for error in report["errors"])
+    assert any(error["code"] == "DUPLICATE_STEELMAKING_GRADE" and error["sheet"] == "03_转炉终点与回收率" for error in report["errors"])
+
+
+def test_business_rows_match_only_by_unique_steelmaking_grade():
+    report = parse_template_workbook(
+        workbook_bytes(
+            task_rows=[
+                ["T001", "外部牌号名可不同", 999, 150, "2026-05", "Q235B-1", "只靠炼钢牌号定位"],
+                ["T002", "Q355C", 8, 150, "2026-05", "Q355C-1", "低合金样例"],
+            ]
+        )
+    )
+
+    assert report["status"] == "ok"
+    assert report["parsed"]["tasks"][0]["config"]["target"]["C"] == {"max": 0.16}
+
+
+def test_target_and_endpoint_legacy_match_fields_are_optional_when_steelmaking_grade_is_unique():
+    report = parse_template_workbook(
+        workbook_bytes(
+            task_rows=[
+                ["T001", "外部牌号名可不同", 999, 150, "2026-05", "Q235B-1", "只靠炼钢牌号定位"],
+                ["T002", "Q355C", 8, 150, "2026-05", "Q355C-1", "低合金样例"],
+            ],
+            target_rows=[
+                [None, None, None, "Q235B-1", None, 0.16, None, 0.05, 0.20, 0.22, 0.025, 0.020],
+                ["乱填也不参与匹配", 999, 1000, "Q355C-1", None, 0.16, 0.10, 0.12, 0.90, 0.92, 0.018, 0.010],
+            ],
+            endpoint_rows=[
+                [None, None, None, "Q235B-1", 0.07, 0.12, 0, 0.75, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+                ["乱填也不参与匹配", 999, 1000, "Q355C-1", 0.07, 0.11, 0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+            ],
+        )
+    )
+
+    assert report["status"] == "ok"
+    assert report["parsed"]["tasks"][0]["config"]["target"]["Mn"] == {"min": 0.20, "max": 0.22}
+    assert report["parsed"]["tasks"][0]["config"]["residual"]["C"] == 0.07
+
+
+def test_target_and_endpoint_legacy_match_fields_do_not_validate_bad_values():
+    report = parse_template_workbook(
+        workbook_bytes(
+            target_rows=[
+                ["", "不是数字", "也不是数字", "Q235B-1", None, 0.16, None, 0.05, 0.20, 0.22, 0.025, 0.020],
+                ["乱填也不参与匹配", 1000, 1, "Q355C-1", None, 0.16, 0.10, 0.12, 0.90, 0.92, 0.018, 0.010],
+            ],
+            endpoint_rows=[
+                ["", "不是数字", "也不是数字", "Q235B-1", 0.07, 0.12, 0, 0.75, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+                ["乱填也不参与匹配", 1000, 1, "Q355C-1", 0.07, 0.11, 0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+            ],
+        )
+    )
+
+    assert report["status"] == "ok"
+    assert report["errors"] == []
+
+
+def test_legacy_bound_target_columns_still_parse():
+    report = parse_template_workbook(
+        workbook_bytes(
+            target_header=[
+                "适用牌号",
+                "最小厚度mm",
+                "最大厚度mm",
+                "炼钢牌号",
+                "C下限",
+                "C上限",
+                "Si下限",
+                "Si上限",
+                "Mn下限",
+                "Mn上限",
+                "P上限",
+                "S上限",
+            ],
+            target_rows=[
+                ["Q235B", 1.5, 12, "Q235B-1", 0.06, 0.16, 0.05, 0.12, 0.20, 0.40, 0.025, 0.020],
+                ["Q355C", 3, 12, "Q355C-1", 0.08, 0.16, 0.10, 0.20, 0.90, 1.20, 0.018, 0.010],
+            ],
+        )
+    )
+
+    assert report["status"] == "ok"
+    assert report["parsed"]["tasks"][0]["config"]["target"]["Si"] == {"min": 0.05, "max": 0.12}
+
+
 def test_batch_optimization_continues_when_one_task_fails():
     report = parse_template_workbook(workbook_bytes())
     parsed = report["parsed"]
@@ -128,7 +366,7 @@ def test_template_validation_reports_duplicate_target_match():
     report = parse_template_workbook(workbook_bytes(duplicate_target=True))
 
     assert report["status"] == "error"
-    assert any(error["code"] == "DUPLICATE_MATCH" and error["sheet"] == "01_批量任务" for error in report["errors"])
+    assert any(error["code"] == "DUPLICATE_STEELMAKING_GRADE" and error["sheet"] == "02_目标成分上下限" for error in report["errors"])
 
 
 def test_template_validation_rejects_merged_cells_and_formula_inputs():
@@ -205,7 +443,7 @@ def test_download_template_uses_requested_element_scope():
     alloy_headers = [cell.value for cell in workbook["04_合金成分库"][1]]
     rules_text = "\n".join(str(row[1].value or "") for row in workbook["06_填写说明与校验规则"].iter_rows(min_row=1, max_col=2))
 
-    assert target_headers[4:] == [header for element in TEMPLATE_ELEMENTS for header in (f"{element}下限", f"{element}上限")]
+    assert target_headers[4:] == [f"{element}目标" for element in TEMPLATE_ELEMENTS]
     assert endpoint_headers[4 : 4 + len(TEMPLATE_ELEMENTS)] == [f"{element}终点" for element in TEMPLATE_ELEMENTS]
     assert endpoint_headers[4 + len(TEMPLATE_ELEMENTS) :] == [f"{element}回收率" for element in TEMPLATE_ELEMENTS]
     assert alloy_headers[6:-1] == TEMPLATE_ELEMENTS
@@ -213,6 +451,21 @@ def test_download_template_uses_requested_element_scope():
     assert "N回收率" not in endpoint_headers
     assert "N" not in alloy_headers
     assert "旧模板里的 N 上传时会被忽略" in rules_text
+
+
+def test_checked_in_template_matches_generated_template_values():
+    checked_in = openpyxl.load_workbook(Path("alloy-batch-template-v1.xlsx"), data_only=True)
+    generated = openpyxl.load_workbook(BytesIO(generate_template_workbook()), data_only=True)
+
+    assert checked_in.sheetnames == generated.sheetnames
+    for sheet_name in generated.sheetnames:
+        checked_sheet = checked_in[sheet_name]
+        generated_sheet = generated[sheet_name]
+        assert checked_sheet.max_row == generated_sheet.max_row
+        assert checked_sheet.max_column == generated_sheet.max_column
+        for row in range(1, generated_sheet.max_row + 1):
+            for column in range(1, generated_sheet.max_column + 1):
+                assert checked_sheet.cell(row, column).value == generated_sheet.cell(row, column).value
 
 
 def test_feed_mode_continuous_allows_blank_or_zero_bag_size():

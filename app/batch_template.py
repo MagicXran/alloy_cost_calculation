@@ -17,9 +17,27 @@ from app.solvers import get_solver
 
 TEMPLATE_VERSION = "1"
 IGNORED_ELEMENTS = {"N"}
-TEMPLATE_ELEMENTS = ["C", "Si", "Mn", "P", "S", "V", "Nb", "Ti", "Als", "Alt", "Cr", "Ni", "Cu", "Mo", "B", "Sb"]
+TEMPLATE_ELEMENTS = ["C", "Si", "Mn", "P", "S", "V", "Nb", "Ti", "Als", "Alt", "Ca", "Cr", "Ni", "Cu", "Mo", "B", "Sb"]
 ERROR_FIELD_ELEMENTS = ["P", "S"] + [element for element in TEMPLATE_ELEMENTS if element not in {"P", "S"}]
 DEFAULT_RECOVERY_RATES = {"C": 0.9, "P": 1.0, "S": 1.0}
+SINGLE_TARGET_UPPER_ONLY_ELEMENTS = {"C", "P", "S"}
+SINGLE_TARGET_MARGINS = {
+    "Si": 0.02,
+    "Mn": 0.02,
+    "V": 0.001,
+    "Nb": 0.001,
+    "Ti": 0.005,
+    "Als": 0.005,
+    "Alt": 0.005,
+    "Ca": 0.0,
+    "Cr": 0.03,
+    "Ni": 0.01,
+    "Cu": 0.01,
+    "Mo": 0.01,
+    "B": 0.0002,
+    "Sb": 0.01,
+}
+SI_UPPER_ONLY_THRESHOLD = 0.05
 BUSINESS_SHEETS = [
     "01_批量任务",
     "02_目标成分上下限",
@@ -29,9 +47,9 @@ BUSINESS_SHEETS = [
 ]
 REQUIRED_SHEETS = BUSINESS_SHEETS + ["06_填写说明与校验规则"]
 REQUIRED_HEADERS = {
-    "01_批量任务": ["任务编号", "适用牌号", "厚度mm", "炉重t", "价格方案"],
-    "02_目标成分上下限": ["适用牌号", "最小厚度mm", "最大厚度mm"],
-    "03_转炉终点与回收率": ["适用牌号", "最小厚度mm", "最大厚度mm"],
+    "01_批量任务": ["任务编号", "适用牌号", "厚度mm", "炉重t", "价格方案", "炼钢牌号"],
+    "02_目标成分上下限": ["炼钢牌号"],
+    "03_转炉终点与回收率": ["炼钢牌号"],
     "04_合金成分库": ["合金名称", "价格物料名", "启用", "袋重kg", "最大投加kg每t"],
     "05_价格表": ["价格方案", "物料名称", "价格日期", "价格元每吨"],
 }
@@ -46,8 +64,8 @@ def generate_template_workbook() -> bytes:
     workbook = openpyxl.Workbook()
     workbook.remove(workbook.active)
 
-    q235b_target = {"C": {"min": 0.06, "max": 0.16}, "Si": {"min": 0.05, "max": 0.12}, "Mn": {"min": 0.20, "max": 0.40}, "P": {"max": 0.025}, "S": {"max": 0.020}}
-    q355c_target = {"C": {"min": 0.08, "max": 0.16}, "Si": {"min": 0.10, "max": 0.20}, "Mn": {"min": 0.90, "max": 1.20}, "P": {"max": 0.018}, "S": {"max": 0.010}}
+    q235b_target = {"C": 0.16, "Si": 0.05, "Mn": 0.20, "P": 0.025, "S": 0.020}
+    q355c_target = {"C": 0.16, "Si": 0.10, "Mn": 0.90, "P": 0.018, "S": 0.010}
     q235b_residual = {"C": 0.07, "Mn": 0.12, "Cr": 0}
     q355c_residual = {"C": 0.07, "Mn": 0.11, "Cr": 0}
     q235b_recovery = {"C": 0.90, "Si": 0.75, "Mn": 0.98, "P": 1.00, "S": 1.00, "Cr": 0.96}
@@ -67,9 +85,9 @@ def generate_template_workbook() -> bytes:
         workbook,
         "02_目标成分上下限",
         [
-            ["适用牌号", "最小厚度mm", "最大厚度mm", "炼钢牌号", *element_bound_headers()],
-            ["Q235B", 1.5, 12, "Q235B-1", *element_bound_values(q235b_target)],
-            ["Q355C", 3, 12, "Q355C-1", *element_bound_values(q355c_target)],
+            ["适用牌号", "最小厚度mm", "最大厚度mm", "炼钢牌号", *element_target_headers()],
+            ["Q235B", 1.5, 12, "Q235B-1", *element_values(q235b_target)],
+            ["Q355C", 3, 12, "Q355C-1", *element_values(q355c_target)],
         ],
         {"A": 14, "B": 14, "C": 14, "D": 16},
     )
@@ -120,8 +138,9 @@ def generate_template_workbook() -> bytes:
             ["模板版本", TEMPLATE_VERSION],
             ["填写流程", "下载模板 -> 填业务数据 -> 上传预检 -> 预检通过后批量计算 -> 导出结果"],
             ["单位规则", "成分按百分数数值填写，例如 0.23 表示 0.23%；合金品位 65.66 表示 65.66%。"],
+            ["外部单值规则", "目标成分表使用 元素目标 单值列：C/P/S 按上限控制；Si<=0.05 按上限控制，Si>0.05 按下限并自动加 0.02 上限余量；其他合金化元素按下限并自动加元素余量。旧的 元素下限/元素上限 上传列仍兼容。"],
             ["合金用量公式", "kg/t = (目标成分 - 转炉终点成分) / 合金品位 / 回收率 * 1000"],
-            ["标准元素", "标准模板仅保留 C, Si, Mn, P, S, V, Nb, Ti, Als, Alt, Cr, Ni, Cu, Mo, B, Sb；旧模板里的 N 上传时会被忽略。"],
+            ["标准元素", "标准模板仅保留 C, Si, Mn, P, S, V, Nb, Ti, Als, Alt, Ca, Cr, Ni, Cu, Mo, B, Sb；旧模板里的 N 上传时会被忽略。"],
             ["P/S 规则", "P/S 通常只填写上限；转炉终点已超过上限时任务直接失败。"],
             ["投料方式", "投料方式只能填写 连续 或 整袋；连续物料袋重kg留空或填 0，整袋物料袋重kg必须大于 0。"],
             ["路线序号", "最优路线明细中的路线序号只表示导出排序，从 1 开始，按成本贡献降序排列；它不是现场真实投料顺序。"],
@@ -167,16 +186,8 @@ def style_template_sheet(sheet, widths: dict[str, int]) -> None:
         sheet.column_dimensions[letter].width = width
 
 
-def element_bound_headers() -> list[str]:
-    return [header for element in TEMPLATE_ELEMENTS for header in (f"{element}下限", f"{element}上限")]
-
-
-def element_bound_values(values_by_element: dict[str, dict[str, float]]) -> list[float | None]:
-    values: list[float | None] = []
-    for element in TEMPLATE_ELEMENTS:
-        spec = values_by_element.get(element) or {}
-        values.extend([spec.get("min"), spec.get("max")])
-    return values
+def element_target_headers() -> list[str]:
+    return [f"{element}目标" for element in TEMPLATE_ELEMENTS]
 
 
 def element_endpoint_headers() -> list[str]:
@@ -312,6 +323,8 @@ def build_parsed_template(rows_by_sheet: dict[str, list[dict]], errors: list[dic
 
     target_rows = parse_target_rows(rows_by_sheet["02_目标成分上下限"], errors)
     endpoint_rows = parse_endpoint_rows(rows_by_sheet["03_转炉终点与回收率"], errors)
+    validate_unique_steelmaking_grade(target_rows, "02_目标成分上下限", errors)
+    validate_unique_steelmaking_grade(endpoint_rows, "03_转炉终点与回收率", errors)
     alloy_rows = parse_alloy_rows(rows_by_sheet["04_合金成分库"], errors, warnings)
     prices = parse_price_rows(rows_by_sheet["05_价格表"], errors)
     task_rows = parse_task_rows(rows_by_sheet["01_批量任务"], errors)
@@ -538,7 +551,7 @@ def parse_task_rows(rows: list[dict], errors: list[dict]) -> list[dict]:
                 "thicknessMm": required_number(row, "厚度mm", "01_批量任务", errors, minimum=0),
                 "heatWeightT": required_number(row, "炉重t", "01_批量任务", errors, minimum=0),
                 "priceScheme": required_text(row, "价格方案", "01_批量任务", errors),
-                "steelmakingGrade": optional_text(row.get("炼钢牌号")),
+                "steelmakingGrade": required_text(row, "炼钢牌号", "01_批量任务", errors),
                 "notes": optional_text(row.get("备注")) or "",
             }
         )
@@ -549,11 +562,35 @@ def parse_target_rows(rows: list[dict], errors: list[dict]) -> list[dict]:
     targets = []
     for row in rows:
         target: dict[str, dict] = {}
+        single_target_elements: set[str] = set()
+        for header, value in row.items():
+            parsed = element_header(header, ("目标",))
+            if parsed is None:
+                continue
+            element, _ = parsed
+            number = optional_number(value, "02_目标成分上下限", row["_row"], header, errors, minimum=0, maximum=10)
+            if number is None:
+                continue
+            target[element] = target_bounds_from_single_value(element, number)
+            single_target_elements.add(element)
         for header, value in row.items():
             parsed = element_header(header, ("下限", "上限"))
             if parsed is None:
                 continue
             element, bound_name = parsed
+            if element in single_target_elements:
+                if optional_text(value) is not None:
+                    errors.append(
+                        make_issue(
+                            "02_目标成分上下限",
+                            row["_row"],
+                            element,
+                            "TARGET_COLUMN_CONFLICT",
+                            f"{element} 不能同时填写目标列和上下限列。",
+                            "同一元素请二选一：使用单值目标，或使用旧上下限列。",
+                        )
+                    )
+                continue
             number = optional_number(value, "02_目标成分上下限", row["_row"], header, errors, minimum=0, maximum=10)
             if number is None:
                 continue
@@ -564,6 +601,51 @@ def parse_target_rows(rows: list[dict], errors: list[dict]) -> list[dict]:
                 errors.append(make_issue("02_目标成分上下限", row["_row"], element, "TARGET_RANGE_CROSSED", f"{element} 下限大于上限。", "请修正目标成分上下限。"))
         targets.append({**business_key(row, "02_目标成分上下限", errors), "target": target})
     return targets
+
+
+def validate_unique_steelmaking_grade(records: list[dict], sheet: str, errors: list[dict]) -> None:
+    seen: dict[str, int] = {}
+    for record in records:
+        steelmaking_grade = record.get("steelmakingGrade")
+        if not steelmaking_grade:
+            continue
+        if steelmaking_grade in seen:
+            errors.append(
+                make_issue(
+                    sheet,
+                    record.get("row"),
+                    "炼钢牌号",
+                    "DUPLICATE_STEELMAKING_GRADE",
+                    f"炼钢牌号重复：{steelmaking_grade}。",
+                    "炼钢牌号在该 sheet 内必须唯一，请删除或合并重复记录。",
+                )
+            )
+            continue
+        seen[steelmaking_grade] = record.get("row")
+
+
+def target_bounds_from_single_value(element: str, value: float) -> dict[str, float]:
+    """把外部单值目标转换成优化器需要的上下限。"""
+
+    target = normalized_float(value)
+    if element in SINGLE_TARGET_UPPER_ONLY_ELEMENTS:
+        return {"max": target}
+    if element == "Si" and target <= SI_UPPER_ONLY_THRESHOLD:
+        return {"max": target}
+    margin = SINGLE_TARGET_MARGINS.get(element, 0.0)
+    return {"min": target, "max": normalized_float(target + margin)}
+
+
+def single_target_values_to_bounds(values_by_element: dict[str, float]) -> dict[str, dict[str, float]]:
+    """批量转换外部单值目标，供模板样例和兼容解析复用。"""
+
+    return {element: target_bounds_from_single_value(element, value) for element, value in values_by_element.items()}
+
+
+def normalized_float(value: float) -> float:
+    """避免浮点噪声进入业务配置。"""
+
+    return round(float(value), 10)
 
 
 def parse_endpoint_rows(rows: list[dict], errors: list[dict]) -> list[dict]:
@@ -673,18 +755,31 @@ def parse_price_rows(rows: list[dict], errors: list[dict]) -> list[dict]:
 
 
 def match_business_row(records: list[dict], task: dict, sheet: str, errors: list[dict]) -> dict | None:
-    matches = [
-        item
-        for item in records
-        if item["grade"] == task["grade"]
-        and item["minThicknessMm"] <= task["thicknessMm"] <= item["maxThicknessMm"]
-        and (not task.get("steelmakingGrade") or item.get("steelmakingGrade") == task["steelmakingGrade"])
-    ]
+    steelmaking_grade = task.get("steelmakingGrade")
+    matches = [item for item in records if item.get("steelmakingGrade") == steelmaking_grade]
     if not matches:
-        errors.append(make_issue("01_批量任务", task["row"], "适用牌号", "MATCH_NOT_FOUND", f"{sheet} 中找不到 {task['grade']} / {task['thicknessMm']}mm 对应记录。", "请补充牌号厚度区间，或修正任务厚度/炼钢牌号。"))
+        errors.append(
+            make_issue(
+                "01_批量任务",
+                task["row"],
+                "炼钢牌号",
+                "MATCH_NOT_FOUND",
+                f"{sheet} 中找不到炼钢牌号 {steelmaking_grade} 对应记录。",
+                "请补充该炼钢牌号记录，或修正任务里的炼钢牌号。",
+            )
+        )
         return None
     if len(matches) > 1:
-        errors.append(make_issue("01_批量任务", task["row"], "适用牌号", "DUPLICATE_MATCH", f"{sheet} 中匹配到多条 {task['grade']} / {task['thicknessMm']}mm 记录。", "请补充炼钢牌号或删除重复业务记录。"))
+        errors.append(
+            make_issue(
+                "01_批量任务",
+                task["row"],
+                "炼钢牌号",
+                "DUPLICATE_STEELMAKING_GRADE",
+                f"{sheet} 中炼钢牌号 {steelmaking_grade} 匹配到多条记录。",
+                "炼钢牌号必须唯一，请删除或合并重复业务记录。",
+            )
+        )
         return None
     return matches[0]
 
@@ -717,16 +812,13 @@ def ordered_elements(target: dict, alloys: list[dict]) -> list[str]:
 
 
 def business_key(row: dict, sheet: str, errors: list[dict]) -> dict:
-    min_thickness = required_number(row, "最小厚度mm", sheet, errors, minimum=0, allow_zero=True)
-    max_thickness = required_number(row, "最大厚度mm", sheet, errors, minimum=0)
-    if min_thickness > max_thickness:
-        errors.append(make_issue(sheet, row["_row"], "最大厚度mm", "THICKNESS_RANGE_CROSSED", "最小厚度不能大于最大厚度。", "请修正厚度区间。"))
+    steelmaking_grade = required_text(row, "炼钢牌号", sheet, errors)
     return {
         "row": row["_row"],
-        "grade": required_text(row, "适用牌号", sheet, errors),
-        "minThicknessMm": min_thickness,
-        "maxThicknessMm": max_thickness,
-        "steelmakingGrade": optional_text(row.get("炼钢牌号")),
+        "grade": optional_text(row.get("适用牌号")) or "",
+        "minThicknessMm": 0.0,
+        "maxThicknessMm": 0.0,
+        "steelmakingGrade": steelmaking_grade,
     }
 
 
@@ -805,7 +897,7 @@ def element_header(header: str, suffixes: tuple[str, ...]) -> tuple[str, str] | 
     for suffix in suffixes:
         if normalized.endswith(suffix):
             element = normalized[: -len(suffix)].strip()
-            if element and element not in IGNORED_ELEMENTS:
+            if element in TEMPLATE_ELEMENTS:
                 return element, suffix
     return None
 
