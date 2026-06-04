@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app import main as app_main
 from app.core import (
+    MAX_PRICE_PER_TON,
     OptimizerError,
     effective_bounds,
     element_increment_kg_per_t,
@@ -95,6 +96,27 @@ def test_validate_config_rejects_percent_unit_mistake():
     config = load_default_config()
     config["alloys"][0]["composition"]["Mn"] = 0.6566
     with pytest.raises(OptimizerError, match="百分比|65.66|0.6566"):
+        validate_config(config)
+
+
+def test_validate_config_accepts_expensive_microalloy_prices():
+    """Nb/Mo 等微合金真实价格可能超过 20 万元/t，不能误判为单位错误。"""
+
+    config = load_default_config()
+    alloy = config["alloys"][0]
+    alloy["name"] = "钼铁"
+    alloy["price_per_ton"] = 272566.37
+
+    validate_config(config)
+
+
+def test_validate_config_still_rejects_extreme_price_unit_mistake():
+    """放宽微合金价格上限后，极端价格仍应被当作单位错误拦截。"""
+
+    config = load_default_config()
+    config["alloys"][0]["price_per_ton"] = MAX_PRICE_PER_TON + 1
+
+    with pytest.raises(OptimizerError, match="价格应为"):
         validate_config(config)
 
 

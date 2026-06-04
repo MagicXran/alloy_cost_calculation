@@ -174,12 +174,13 @@ def test_single_target_values_expand_to_bounds_with_element_margins():
     assert q235b_target["P"] == {"max": 0.025}
     assert q235b_target["S"] == {"max": 0.020}
     assert q235b_target["Als"] == {"min": 0.010, "max": 0.015}
+    assert "Ca" not in q235b_target
     assert q355c_target["Si"] == {"min": 0.10, "max": 0.12}
     assert q355c_target["V"] == {"min": 0.030, "max": 0.031}
     assert q355c_target["Nb"] == {"min": 0.020, "max": 0.021}
     assert q355c_target["Ti"] == {"min": 0.025, "max": 0.030}
     assert q355c_target["Alt"] == {"min": 0.030, "max": 0.035}
-    assert q355c_target["Ca"] == {"min": 0.004, "max": 0.004}
+    assert q355c_target["Ca"] == {"max": 0.004}
     assert q355c_target["Cr"] == {"min": 0.20, "max": 0.23}
     assert q355c_target["Ni"] == {"min": 0.10, "max": 0.11}
     assert q355c_target["Cu"] == {"min": 0.10, "max": 0.11}
@@ -450,6 +451,8 @@ def test_download_template_uses_requested_element_scope():
     assert "N上限" not in target_headers
     assert "N回收率" not in endpoint_headers
     assert "N" not in alloy_headers
+    assert "C/P/S/Ca 按上限控制" in rules_text
+    assert "Ca 空值不参与约束" in rules_text
     assert "旧模板里的 N 上传时会被忽略" in rules_text
 
 

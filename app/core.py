@@ -16,6 +16,7 @@ from app.solvers.base import RawSolution, Solver
 BASE_ELEMENTS = ["C", "Si", "Mn", "Cr", "P", "S"]
 ELEMENTS = BASE_ELEMENTS
 EPS = 1e-8
+MAX_PRICE_PER_TON = 1_000_000
 
 
 class OptimizerError(ValueError):
@@ -187,7 +188,7 @@ def validate_config(config: dict[str, Any]) -> None:
             continue
         name = alloy.get("name") or "未命名合金"
         price = number_or_throw(alloy.get("price_per_ton"), f"{name}.price_per_ton")
-        if price < 100 or price > 200000:
+        if price < 100 or price > MAX_PRICE_PER_TON:
             errors.append(f"{name} 价格应为 ¥/t，当前值疑似单位错误")
         bag_size = number_or_throw(alloy.get("bag_size_kg") or 0, f"{name}.bag_size_kg")
         if bag_size < 0 or bag_size > 2000:

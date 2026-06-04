@@ -20,7 +20,7 @@ IGNORED_ELEMENTS = {"N"}
 TEMPLATE_ELEMENTS = ["C", "Si", "Mn", "P", "S", "V", "Nb", "Ti", "Als", "Alt", "Ca", "Cr", "Ni", "Cu", "Mo", "B", "Sb"]
 ERROR_FIELD_ELEMENTS = ["P", "S"] + [element for element in TEMPLATE_ELEMENTS if element not in {"P", "S"}]
 DEFAULT_RECOVERY_RATES = {"C": 0.9, "P": 1.0, "S": 1.0}
-SINGLE_TARGET_UPPER_ONLY_ELEMENTS = {"C", "P", "S"}
+SINGLE_TARGET_UPPER_ONLY_ELEMENTS = {"C", "P", "S", "Ca"}
 SINGLE_TARGET_MARGINS = {
     "Si": 0.02,
     "Mn": 0.02,
@@ -29,7 +29,6 @@ SINGLE_TARGET_MARGINS = {
     "Ti": 0.005,
     "Als": 0.005,
     "Alt": 0.005,
-    "Ca": 0.0,
     "Cr": 0.03,
     "Ni": 0.01,
     "Cu": 0.01,
@@ -138,7 +137,7 @@ def generate_template_workbook() -> bytes:
             ["模板版本", TEMPLATE_VERSION],
             ["填写流程", "下载模板 -> 填业务数据 -> 上传预检 -> 预检通过后批量计算 -> 导出结果"],
             ["单位规则", "成分按百分数数值填写，例如 0.23 表示 0.23%；合金品位 65.66 表示 65.66%。"],
-            ["外部单值规则", "目标成分表使用 元素目标 单值列：C/P/S 按上限控制；Si<=0.05 按上限控制，Si>0.05 按下限并自动加 0.02 上限余量；其他合金化元素按下限并自动加元素余量。旧的 元素下限/元素上限 上传列仍兼容。"],
+            ["外部单值规则", "目标成分表使用 元素目标 单值列：C/P/S/Ca 按上限控制，其中 Ca 空值不参与约束；Si<=0.05 按上限控制，Si>0.05 按下限并自动加 0.02 上限余量；其他合金化元素按下限并自动加元素余量。旧的 元素下限/元素上限 上传列仍兼容。"],
             ["合金用量公式", "kg/t = (目标成分 - 转炉终点成分) / 合金品位 / 回收率 * 1000"],
             ["标准元素", "标准模板仅保留 C, Si, Mn, P, S, V, Nb, Ti, Als, Alt, Ca, Cr, Ni, Cu, Mo, B, Sb；旧模板里的 N 上传时会被忽略。"],
             ["P/S 规则", "P/S 通常只填写上限；转炉终点已超过上限时任务直接失败。"],
