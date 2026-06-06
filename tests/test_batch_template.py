@@ -7,6 +7,7 @@ import openpyxl
 from fastapi.testclient import TestClient
 
 from app.batch_template import TEMPLATE_ELEMENTS, export_batch_result, generate_template_workbook, parse_template_workbook, run_batch_optimization
+from app.core import alloy_coeff
 from app.main import app
 
 
@@ -18,6 +19,7 @@ def workbook_bytes(
     task_rows: list[list] | None = None,
     target_header: list[str] | None = None,
     target_rows: list[list] | None = None,
+    endpoint_header: list[str] | None = None,
     endpoint_rows: list[list] | None = None,
     alloy_header: list[str] | None = None,
     alloy_rows: list[list] | None = None,
@@ -62,8 +64,7 @@ def workbook_bytes(
         targets.append(["Q235B-重复", 99, 100, "Q235B-1", None, 0.16, None, 0.05, 0.20, 0.22, 0.025, 0.020])
 
     endpoints = wb.create_sheet("03_转炉终点与回收率")
-    endpoints.append(
-        [
+    default_endpoint_header = [
             "适用牌号",
             "最小厚度mm",
             "最大厚度mm",
@@ -71,6 +72,9 @@ def workbook_bytes(
             "C终点",
             "Mn终点",
             "Cr终点",
+            "C回收率",
+            "P回收率",
+            "S回收率",
             "Si回收率",
             "Mn回收率",
             "V回收率",
@@ -85,11 +89,11 @@ def workbook_bytes(
             "Mo回收率",
             "B回收率",
             "Sb回收率",
-        ]
-    )
+    ]
+    endpoints.append(endpoint_header or default_endpoint_header)
     for row in endpoint_rows or [
-        ["Q235B", 1.5, 12, "Q235B-1", 0.07, 0.12, 0, 0.75, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
-        ["Q355C", 3, 12, "Q355C-1", 0.07, 0.11, 0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+        ["Q235B", 1.5, 12, "Q235B-1", 0.07, 0.12, 0, 0.90, 1.0, 1.0, 0.75, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+        ["Q355C", 3, 12, "Q355C-1", 0.07, 0.11, 0, 0.90, 1.0, 1.0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
     ]:
         endpoints.append(row)
 
@@ -180,7 +184,7 @@ def test_single_target_values_expand_to_bounds_with_element_margins():
     assert q355c_target["Nb"] == {"min": 0.020, "max": 0.021}
     assert q355c_target["Ti"] == {"min": 0.025, "max": 0.030}
     assert q355c_target["Alt"] == {"min": 0.030, "max": 0.035}
-    assert q355c_target["Ca"] == {"max": 0.004}
+    assert "Ca" not in q355c_target
     assert q355c_target["Cr"] == {"min": 0.20, "max": 0.23}
     assert q355c_target["Ni"] == {"min": 0.10, "max": 0.11}
     assert q355c_target["Cu"] == {"min": 0.10, "max": 0.11}
@@ -218,6 +222,126 @@ def test_non_element_target_headers_are_ignored():
     assert "产量" not in target
 
 
+def test_legacy_ca_target_bounds_are_ignored():
+    report = parse_template_workbook(
+        workbook_bytes(
+            target_header=[
+                "适用牌号",
+                "最小厚度mm",
+                "最大厚度mm",
+                "炼钢牌号",
+                "C上限",
+                "Ca下限",
+                "Ca上限",
+                "Si上限",
+                "Mn下限",
+                "Mn上限",
+                "P上限",
+                "S上限",
+            ],
+            target_rows=[
+                ["Q235B", 1.5, 12, "Q235B-1", 0.16, 0.001, 0.004, 0.05, 0.20, 0.22, 0.025, 0.020],
+                ["Q355C", 3, 12, "Q355C-1", 0.16, 0.001, 0.005, 0.12, 0.90, 0.92, 0.018, 0.010],
+            ],
+        )
+    )
+
+    assert report["status"] == "ok"
+    assert "Ca" not in report["parsed"]["tasks"][0]["config"]["target"]
+    assert "Ca" not in report["parsed"]["tasks"][1]["config"]["target"]
+
+
+def test_ca_recovery_is_not_carried_into_solver_config():
+    report = parse_template_workbook(workbook_bytes())
+
+    assert report["status"] == "ok"
+    assert "Ca" not in report["parsed"]["tasks"][0]["config"]["recovery_rates"]
+    assert "Ca" not in report["parsed"]["tasks"][1]["config"]["recovery_rates"]
+
+
+def test_ca_does_not_appear_in_batch_chemistry_checks():
+    report = parse_template_workbook(workbook_bytes())
+    result = run_batch_optimization(report["parsed"], solver_name="internal")
+
+    assert result["status"] == "ok"
+    checks = result["results"][0]["result"]["modes"]["milp"]["chemistryChecks"]
+    assert "Ca" not in {check["element"] for check in checks}
+
+
+def test_al_recovery_is_fixed_at_fifteen_percent_even_when_sheet_values_differ():
+    report = parse_template_workbook(workbook_bytes())
+
+    assert report["status"] == "ok"
+    rates = report["parsed"]["tasks"][0]["config"]["recovery_rates"]
+    assert rates["Als"] == 0.15
+    assert rates["Alt"] == 0.15
+
+
+def test_invalid_al_recovery_cells_are_ignored_because_al_is_fixed():
+    report = parse_template_workbook(
+        workbook_bytes(
+            endpoint_rows=[
+                ["Q235B", 1.5, 12, "Q235B-1", 0.07, 0.12, 0, 0.90, 1.0, 1.0, 0.75, 0.98, 0.98, 0.98, 0.70, "不参与", "也不参与", 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+                ["Q355C", 3, 12, "Q355C-1", 0.07, 0.11, 0, 0.90, 1.0, 1.0, 0.80, 0.98, 0.98, 0.98, 0.70, None, None, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+            ]
+        )
+    )
+
+    assert report["status"] == "ok"
+    rates = report["parsed"]["tasks"][0]["config"]["recovery_rates"]
+    assert rates["Als"] == 0.15
+    assert rates["Alt"] == 0.15
+
+
+def test_missing_cps_recovery_rates_are_reported():
+    report = parse_template_workbook(
+        workbook_bytes(
+            endpoint_header=[
+                "适用牌号",
+                "最小厚度mm",
+                "最大厚度mm",
+                "炼钢牌号",
+                "C终点",
+                "Mn终点",
+                "Cr终点",
+                "Si回收率",
+                "Mn回收率",
+                "V回收率",
+                "Nb回收率",
+                "Ti回收率",
+                "Als回收率",
+                "Alt回收率",
+                "Ca回收率",
+                "Cr回收率",
+                "Ni回收率",
+                "Cu回收率",
+                "Mo回收率",
+                "B回收率",
+                "Sb回收率",
+            ],
+            endpoint_rows=[
+                ["Q235B", 1.5, 12, "Q235B-1", 0.07, 0.12, 0, 0.75, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+                ["Q355C", 3, 12, "Q355C-1", 0.07, 0.11, 0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+            ],
+        )
+    )
+
+    assert report["status"] == "error"
+    missing_fields = {error["field"] for error in report["errors"] if error["code"] == "RECOVERY_NOT_FOUND"}
+    assert {"C回收率", "P回收率", "S回收率"} <= missing_fields
+
+
+def test_recovery_rates_are_matched_per_steelmaking_grade():
+    report = parse_template_workbook(workbook_bytes())
+
+    assert report["status"] == "ok"
+    tasks = report["parsed"]["tasks"]
+    assert tasks[0]["config"]["recovery_rates"]["Si"] == 0.75
+    assert tasks[1]["config"]["recovery_rates"]["Si"] == 0.80
+    assert abs(alloy_coeff(tasks[0]["config"]["alloys"][0], "Si", tasks[0]["config"]) - 17.69 * 0.75 / 1000) < 1e-12
+    assert abs(alloy_coeff(tasks[1]["config"]["alloys"][0], "Si", tasks[1]["config"]) - 17.69 * 0.80 / 1000) < 1e-12
+
+
 def test_single_target_and_legacy_bounds_for_same_element_conflict():
     report = parse_template_workbook(
         workbook_bytes(
@@ -253,10 +377,10 @@ def test_target_and_endpoint_steelmaking_grade_must_be_unique_across_sheet():
                 ["未引用重复2", 3, 4, "UNUSED-DUP", None, 0.16, None, 0.05, 0.20, 0.22, 0.025, 0.020],
             ],
             endpoint_rows=[
-                ["Q235B", 1.5, 12, "Q235B-1", 0.07, 0.12, 0, 0.75, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
-                ["Q355C", 3, 12, "Q355C-1", 0.07, 0.11, 0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
-                ["未引用重复", 1, 2, "UNUSED-ENDPOINT-DUP", 0.07, 0.11, 0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
-                ["未引用重复2", 3, 4, "UNUSED-ENDPOINT-DUP", 0.07, 0.11, 0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+                ["Q235B", 1.5, 12, "Q235B-1", 0.07, 0.12, 0, 0.90, 1.0, 1.0, 0.75, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+                ["Q355C", 3, 12, "Q355C-1", 0.07, 0.11, 0, 0.90, 1.0, 1.0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+                ["未引用重复", 1, 2, "UNUSED-ENDPOINT-DUP", 0.07, 0.11, 0, 0.90, 1.0, 1.0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+                ["未引用重复2", 3, 4, "UNUSED-ENDPOINT-DUP", 0.07, 0.11, 0, 0.90, 1.0, 1.0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
             ],
         )
     )
@@ -292,8 +416,8 @@ def test_target_and_endpoint_legacy_match_fields_are_optional_when_steelmaking_g
                 ["乱填也不参与匹配", 999, 1000, "Q355C-1", None, 0.16, 0.10, 0.12, 0.90, 0.92, 0.018, 0.010],
             ],
             endpoint_rows=[
-                [None, None, None, "Q235B-1", 0.07, 0.12, 0, 0.75, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
-                ["乱填也不参与匹配", 999, 1000, "Q355C-1", 0.07, 0.11, 0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+                [None, None, None, "Q235B-1", 0.07, 0.12, 0, 0.90, 1.0, 1.0, 0.75, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+                ["乱填也不参与匹配", 999, 1000, "Q355C-1", 0.07, 0.11, 0, 0.90, 1.0, 1.0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
             ],
         )
     )
@@ -311,8 +435,8 @@ def test_target_and_endpoint_legacy_match_fields_do_not_validate_bad_values():
                 ["乱填也不参与匹配", 1000, 1, "Q355C-1", None, 0.16, 0.10, 0.12, 0.90, 0.92, 0.018, 0.010],
             ],
             endpoint_rows=[
-                ["", "不是数字", "也不是数字", "Q235B-1", 0.07, 0.12, 0, 0.75, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
-                ["乱填也不参与匹配", 1000, 1, "Q355C-1", 0.07, 0.11, 0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+                ["", "不是数字", "也不是数字", "Q235B-1", 0.07, 0.12, 0, 0.90, 1.0, 1.0, 0.75, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+                ["乱填也不参与匹配", 1000, 1, "Q355C-1", 0.07, 0.11, 0, 0.90, 1.0, 1.0, 0.80, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
             ],
         )
     )
@@ -451,8 +575,9 @@ def test_download_template_uses_requested_element_scope():
     assert "N上限" not in target_headers
     assert "N回收率" not in endpoint_headers
     assert "N" not in alloy_headers
-    assert "C/P/S/Ca 按上限控制" in rules_text
-    assert "Ca 空值不参与约束" in rules_text
+    assert "C/P/S 按上限控制" in rules_text
+    assert "Ca 目标值始终不参与约束" in rules_text
+    assert "Als/Alt 回收率固定按 0.15" in rules_text
     assert "旧模板里的 N 上传时会被忽略" in rules_text
 
 

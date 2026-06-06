@@ -19,8 +19,9 @@ TEMPLATE_VERSION = "1"
 IGNORED_ELEMENTS = {"N"}
 TEMPLATE_ELEMENTS = ["C", "Si", "Mn", "P", "S", "V", "Nb", "Ti", "Als", "Alt", "Ca", "Cr", "Ni", "Cu", "Mo", "B", "Sb"]
 ERROR_FIELD_ELEMENTS = ["P", "S"] + [element for element in TEMPLATE_ELEMENTS if element not in {"P", "S"}]
-DEFAULT_RECOVERY_RATES = {"C": 0.9, "P": 1.0, "S": 1.0}
-SINGLE_TARGET_UPPER_ONLY_ELEMENTS = {"C", "P", "S", "Ca"}
+TARGET_IGNORED_ELEMENTS = {"Ca"}
+FIXED_RECOVERY_RATES = {"Als": 0.15, "Alt": 0.15}
+SINGLE_TARGET_UPPER_ONLY_ELEMENTS = {"C", "P", "S"}
 SINGLE_TARGET_MARGINS = {
     "Si": 0.02,
     "Mn": 0.02,
@@ -67,8 +68,8 @@ def generate_template_workbook() -> bytes:
     q355c_target = {"C": 0.16, "Si": 0.10, "Mn": 0.90, "P": 0.018, "S": 0.010}
     q235b_residual = {"C": 0.07, "Mn": 0.12, "Cr": 0}
     q355c_residual = {"C": 0.07, "Mn": 0.11, "Cr": 0}
-    q235b_recovery = {"C": 0.90, "Si": 0.75, "Mn": 0.98, "P": 1.00, "S": 1.00, "Cr": 0.96}
-    q355c_recovery = {"C": 0.90, "Si": 0.80, "Mn": 0.98, "P": 1.00, "S": 1.00, "Cr": 0.96}
+    q235b_recovery = {**FIXED_RECOVERY_RATES, "C": 0.90, "Si": 0.75, "Mn": 0.98, "P": 1.00, "S": 1.00, "Cr": 0.96}
+    q355c_recovery = {**FIXED_RECOVERY_RATES, "C": 0.90, "Si": 0.80, "Mn": 0.98, "P": 1.00, "S": 1.00, "Cr": 0.96}
 
     create_sheet(
         workbook,
@@ -137,8 +138,8 @@ def generate_template_workbook() -> bytes:
             ["模板版本", TEMPLATE_VERSION],
             ["填写流程", "下载模板 -> 填业务数据 -> 上传预检 -> 预检通过后批量计算 -> 导出结果"],
             ["单位规则", "成分按百分数数值填写，例如 0.23 表示 0.23%；合金品位 65.66 表示 65.66%。"],
-            ["外部单值规则", "目标成分表使用 元素目标 单值列：C/P/S/Ca 按上限控制，其中 Ca 空值不参与约束；Si<=0.05 按上限控制，Si>0.05 按下限并自动加 0.02 上限余量；其他合金化元素按下限并自动加元素余量。旧的 元素下限/元素上限 上传列仍兼容。"],
-            ["合金用量公式", "kg/t = (目标成分 - 转炉终点成分) / 合金品位 / 回收率 * 1000"],
+            ["外部单值规则", "目标成分表使用 元素目标 单值列：C/P/S 按上限控制；Ca 目标值始终不参与约束；Si<=0.05 按上限控制，Si>0.05 按下限并自动加 0.02 上限余量；其他合金化元素按下限并自动加元素余量。旧的 元素下限/元素上限 上传列仍兼容。"],
+            ["合金用量公式", "kg/t = (目标成分 - 转炉终点成分) / 合金品位 / 回收率 * 1000；Als/Alt 回收率固定按 0.15 计算，其他参与计算元素必须在转炉终点与回收率表填写回收率。"],
             ["标准元素", "标准模板仅保留 C, Si, Mn, P, S, V, Nb, Ti, Als, Alt, Ca, Cr, Ni, Cu, Mo, B, Sb；旧模板里的 N 上传时会被忽略。"],
             ["P/S 规则", "P/S 通常只填写上限；转炉终点已超过上限时任务直接失败。"],
             ["投料方式", "投料方式只能填写 连续 或 整袋；连续物料袋重kg留空或填 0，整袋物料袋重kg必须大于 0。"],
@@ -378,7 +379,7 @@ def build_parsed_template(rows_by_sheet: dict[str, list[dict]], errors: list[dic
 
         target_spec = deepcopy(target["target"])
         residual = build_residual(target_spec, endpoint["residual"], config_alloys)
-        recovery_rates = build_recovery_rates(target_spec, endpoint["recoveryRates"], config_alloys, errors)
+        recovery_rates = build_recovery_rates(target_spec, endpoint["recoveryRates"], endpoint.get("row"), config_alloys, errors)
         parsed_tasks.append(
             {
                 "taskId": task["taskId"],
@@ -567,6 +568,8 @@ def parse_target_rows(rows: list[dict], errors: list[dict]) -> list[dict]:
             if parsed is None:
                 continue
             element, _ = parsed
+            if element in TARGET_IGNORED_ELEMENTS:
+                continue
             number = optional_number(value, "02_目标成分上下限", row["_row"], header, errors, minimum=0, maximum=10)
             if number is None:
                 continue
@@ -577,6 +580,8 @@ def parse_target_rows(rows: list[dict], errors: list[dict]) -> list[dict]:
             if parsed is None:
                 continue
             element, bound_name = parsed
+            if element in TARGET_IGNORED_ELEMENTS:
+                continue
             if element in single_target_elements:
                 if optional_text(value) is not None:
                     errors.append(
@@ -638,7 +643,7 @@ def target_bounds_from_single_value(element: str, value: float) -> dict[str, flo
 def single_target_values_to_bounds(values_by_element: dict[str, float]) -> dict[str, dict[str, float]]:
     """批量转换外部单值目标，供模板样例和兼容解析复用。"""
 
-    return {element: target_bounds_from_single_value(element, value) for element, value in values_by_element.items()}
+    return {element: target_bounds_from_single_value(element, value) for element, value in values_by_element.items() if element not in TARGET_IGNORED_ELEMENTS}
 
 
 def normalized_float(value: float) -> float:
@@ -662,6 +667,8 @@ def parse_endpoint_rows(rows: list[dict], errors: list[dict]) -> list[dict]:
                     residual[element] = number
             if recovery_header is not None:
                 element, _ = recovery_header
+                if element in FIXED_RECOVERY_RATES:
+                    continue
                 number = optional_number(value, "03_转炉终点与回收率", row["_row"], header, errors, minimum=0, maximum=1.2)
                 if number is not None:
                     recovery[element] = number
@@ -788,15 +795,16 @@ def build_residual(target: dict, endpoint_residual: dict, alloys: list[dict]) ->
     return {element: float(endpoint_residual.get(element, 0) or 0) for element in elements}
 
 
-def build_recovery_rates(target: dict, endpoint_recovery: dict, alloys: list[dict], errors: list[dict]) -> dict[str, float]:
-    rates = dict(DEFAULT_RECOVERY_RATES)
-    rates.update(endpoint_recovery)
+def build_recovery_rates(target: dict, endpoint_recovery: dict, endpoint_row: int | None, alloys: list[dict], errors: list[dict]) -> dict[str, float]:
+    rates = dict(endpoint_recovery)
+    rates.update(FIXED_RECOVERY_RATES)
+    ignored_recovery_elements = IGNORED_ELEMENTS | TARGET_IGNORED_ELEMENTS
     for element in ordered_elements(target, alloys):
-        if element in IGNORED_ELEMENTS:
+        if element in ignored_recovery_elements:
             continue
         if element not in rates:
-            errors.append(make_issue("03_转炉终点与回收率", None, f"{element}回收率", "RECOVERY_NOT_FOUND", f"缺少 {element} 回收率。", "请在转炉终点与回收率表补充该元素回收率。"))
-    return {element: float(rates[element]) for element in rates if element not in IGNORED_ELEMENTS}
+            errors.append(make_issue("03_转炉终点与回收率", endpoint_row, f"{element}回收率", "RECOVERY_NOT_FOUND", f"缺少 {element} 回收率。", "请在转炉终点与回收率表补充该元素回收率。"))
+    return {element: float(rates[element]) for element in rates if element not in ignored_recovery_elements}
 
 
 def ordered_elements(target: dict, alloys: list[dict]) -> list[str]:
