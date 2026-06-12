@@ -120,6 +120,23 @@
     }
   },
 
+  "process_rules": {
+    "enabled": true,
+    "carbon_target_margin": 0.01,
+    "disable_silicon_alloys_si_max": 0.04,
+    "manual_aluminum": true,
+    "ti_safety_addition": 0.004,
+    "trace_alloy_thresholds": {
+      "Ni": 0.02,
+      "Cu": 0.02,
+      "Mo": 0.02,
+      "Sb": 0.02,
+      "B": 0.0002
+    },
+    "phosphorus_alloy_max": 0.040,
+    "sulfur_alloy_max": 0.030
+  },
+
   "residual": {
     "C": 0.04, "Si": 0.0, "Mn": 0.08, "Cr": 0.0,
     "P": 0.008, "S": 0.008

@@ -17,6 +17,16 @@ BASE_ELEMENTS = ["C", "Si", "Mn", "Cr", "P", "S"]
 ELEMENTS = BASE_ELEMENTS
 EPS = 1e-8
 MAX_PRICE_PER_TON = 1_000_000
+DEFAULT_PROCESS_RULES = {
+    "enabled": True,
+    "carbon_target_margin": 0.01,
+    "disable_silicon_alloys_si_max": 0.04,
+    "manual_aluminum": True,
+    "ti_safety_addition": 0.004,
+    "trace_alloy_thresholds": {"Ni": 0.02, "Cu": 0.02, "Mo": 0.02, "Sb": 0.02, "B": 0.0002},
+    "phosphorus_alloy_max": 0.040,
+    "sulfur_alloy_max": 0.030,
+}
 
 
 class OptimizerError(ValueError):
@@ -72,14 +82,45 @@ def effective_bounds(config: dict[str, Any], element: str) -> dict[str, float | 
 
     control = control_target_for(config, element)
     if control is not None:
-        return {"min": None, "max": control}
+        return apply_process_rules_to_bounds(config, element, {"min": None, "max": control})
 
     target = (config.get("target") or {}).get(element) or {}
     margin = (config.get("safety_margins") or {}).get(element) or {"low": 0, "high": 0}
-    return {
+    bounds = {
         "min": None if "min" not in target else float(target["min"]) + float(margin.get("low") or 0),
         "max": None if "max" not in target else float(target["max"]) - float(margin.get("high") or 0),
     }
+    return apply_process_rules_to_bounds(config, element, bounds)
+
+
+def apply_process_rules_to_bounds(config: dict[str, Any], element: str, bounds: dict[str, float | None]) -> dict[str, float | None]:
+    """把现场确认的工艺规则折算成求解器可理解的元素边界。"""
+
+    if not process_rules_enabled(config):
+        return bounds
+
+    adjusted = dict(bounds)
+    rules = process_rules(config)
+    target = nominal_target_value(config, element)
+
+    if element == "C" and target is not None and adjusted["max"] is not None:
+        adjusted["max"] = min(adjusted["max"], target - float(rules["carbon_target_margin"]))
+
+    if element == "Ti" and target is not None:
+        addition = float(rules["ti_safety_addition"])
+        if adjusted["min"] is not None:
+            adjusted["min"] += addition
+        if adjusted["max"] is not None:
+            adjusted["max"] += addition
+
+    if element in {"Als", "Alt"} and rules["manual_aluminum"]:
+        return {"min": None, "max": None}
+
+    threshold = (rules["trace_alloy_thresholds"] or {}).get(element)
+    if threshold is not None and target is not None and target <= float(threshold) + EPS:
+        return {"min": None, "max": None}
+
+    return adjusted
 
 
 def control_target_for(config: dict[str, Any], element: str) -> float | None:
@@ -95,6 +136,45 @@ def control_target_for(config: dict[str, Any], element: str) -> float | None:
         return None
     margin = float(control.get("margin") or 0)
     return float(element_config["value"]) - margin
+
+
+def process_rules(config: dict[str, Any]) -> dict[str, Any]:
+    """返回启用的工艺规则配置；未显式配置时使用现场确认的新 LP 规则。"""
+
+    configured = config.get("process_rules")
+    if configured is False:
+        return {**DEFAULT_PROCESS_RULES, "enabled": False}
+    if not isinstance(configured, dict):
+        return dict(DEFAULT_PROCESS_RULES)
+    merged = dict(DEFAULT_PROCESS_RULES)
+    merged.update(configured)
+    if isinstance(configured.get("trace_alloy_thresholds"), dict):
+        thresholds = dict(DEFAULT_PROCESS_RULES["trace_alloy_thresholds"])
+        thresholds.update(configured["trace_alloy_thresholds"])
+        merged["trace_alloy_thresholds"] = thresholds
+    return merged
+
+
+def process_rules_enabled(config: dict[str, Any]) -> bool:
+    """判断是否应用现场确认的新 LP 工艺规则。"""
+
+    return process_rules(config).get("enabled") is not False
+
+
+def nominal_target_value(config: dict[str, Any], element: str) -> float | None:
+    """返回元素的现场目标值，用于判断阈值规则，不叠加安全余量。"""
+
+    control = config.get("control_targets") or {}
+    element_config = (control.get("elements") or {}).get(element) or {}
+    if control.get("enabled") is not False and element_config.get("enabled") is True and "value" in element_config:
+        return float(element_config["value"])
+
+    target = (config.get("target") or {}).get(element) or {}
+    if "max" in target:
+        return float(target["max"])
+    if "min" in target:
+        return float(target["min"])
+    return None
 
 
 def alloy_coeff(alloy: dict[str, Any], element: str, config: dict[str, Any]) -> float:
@@ -253,7 +333,7 @@ def build_linear_model(config: dict[str, Any], alloys: list[dict[str, Any]], fix
     fixed_bounds = fixed_bounds or {}
     for index, alloy in enumerate(alloys):
         lower = 0.0
-        upper = float(alloy.get("max_add_kg_per_t"))
+        upper = process_rule_alloy_upper_bound(config, alloy, float(alloy.get("max_add_kg_per_t")))
         if index in fixed_bounds:
             override = fixed_bounds[index]
             lower = float(override.get("lower", lower))
@@ -265,6 +345,63 @@ def build_linear_model(config: dict[str, Any], alloys: list[dict[str, Any]], fix
         constraints=constraints,
         bounds=model_bounds,
     )
+
+
+def process_rule_alloy_upper_bound(config: dict[str, Any], alloy: dict[str, Any], upper: float) -> float:
+    """把现场确认的禁用/单独维护规则折算成合金变量上限。"""
+
+    if not process_rules_enabled(config):
+        return upper
+
+    rules = process_rules(config)
+    name = str(alloy.get("name") or "")
+    si_target = nominal_target_value(config, "Si")
+    if si_target is not None and si_target <= float(rules["disable_silicon_alloys_si_max"]) + EPS:
+        if alloy_name_matches(name, ("硅锰", "硅铁")):
+            return 0.0
+
+    if rules["manual_aluminum"] and alloy_name_matches(name, ("铝块", "铝粒", "铝锭", "铝线")):
+        return 0.0
+
+    if should_disable_trace_alloy(config, alloy, rules):
+        return 0.0
+
+    p_target = nominal_target_value(config, "P")
+    if p_target is not None and p_target <= float(rules["phosphorus_alloy_max"]) + EPS and alloy_name_matches(name, ("磷铁",)):
+        return 0.0
+
+    s_target = nominal_target_value(config, "S")
+    if s_target is not None and s_target <= float(rules["sulfur_alloy_max"]) + EPS and alloy_name_matches(name, ("硫铁",)):
+        return 0.0
+
+    return upper
+
+
+def should_disable_trace_alloy(config: dict[str, Any], alloy: dict[str, Any], rules: dict[str, Any]) -> bool:
+    """Ni/Cu/Mo/Sb/B 低目标时，不允许投对应纯合金。"""
+
+    aliases = {
+        "Ni": ("镍",),
+        "Cu": ("铜",),
+        "Mo": ("钼",),
+        "Sb": ("锑",),
+        "B": ("硼",),
+    }
+    name = str(alloy.get("name") or "")
+    for element, threshold in (rules["trace_alloy_thresholds"] or {}).items():
+        target = nominal_target_value(config, element)
+        if target is None or target > float(threshold) + EPS:
+            continue
+        if alloy_name_matches(name, aliases.get(element, ())):
+            return True
+    return False
+
+
+def alloy_name_matches(name: str, aliases: tuple[str, ...]) -> bool:
+    """按现场物料名做窄匹配，避免误伤含杂质的普通合金。"""
+
+    normalized = name.replace(" ", "")
+    return any(alias in normalized for alias in aliases)
 
 
 def solve_alloy_cost(input_config: dict[str, Any], solver: Solver) -> dict[str, Any]:
@@ -375,7 +512,8 @@ def can_add(config: dict[str, Any], alloys: list[dict[str, Any]], doses: dict[st
     next_doses = dict(doses)
     next_doses[alloy_name] = next_doses.get(alloy_name, 0.0) + step
     alloy = next(item for item in alloys if item["name"] == alloy_name)
-    if next_doses[alloy_name] > float(alloy["max_add_kg_per_t"]) + EPS:
+    upper = process_rule_alloy_upper_bound(config, alloy, float(alloy["max_add_kg_per_t"]))
+    if next_doses[alloy_name] > upper + EPS:
         return False
     chemistry = chemistry_from_doses(config, alloys, next_doses)
     for element in active_elements(config, alloys):
@@ -475,7 +613,10 @@ def diagnose_infeasible(config: dict[str, Any], alloys: list[dict[str, Any]], so
     for element in active_elements(config, alloys):
         bounds = effective_bounds(config, element)
         residual = float((config.get("residual") or {}).get(element) or 0)
-        max_reach = residual + sum(float(alloy["max_add_kg_per_t"]) * alloy_coeff(alloy, element, config) for alloy in alloys)
+        max_reach = residual + sum(
+            process_rule_alloy_upper_bound(config, alloy, float(alloy["max_add_kg_per_t"])) * alloy_coeff(alloy, element, config)
+            for alloy in alloys
+        )
         if bounds["min"] is not None and max_reach < bounds["min"] - EPS:
             diagnostics.append(f"{element}下限无法满足：最多 {format_number(max_reach, 4)}%，要求 {format_number(bounds['min'], 4)}%")
         if bounds["max"] is not None and residual > bounds["max"] + EPS:

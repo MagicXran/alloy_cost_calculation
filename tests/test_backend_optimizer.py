@@ -9,6 +9,8 @@ from app import main as app_main
 from app.core import (
     MAX_PRICE_PER_TON,
     OptimizerError,
+    build_linear_model,
+    diagnose_infeasible,
     effective_bounds,
     element_increment_kg_per_t,
     solve_alloy_cost,
@@ -129,7 +131,7 @@ def test_control_targets_replace_si_c_ranges_with_upper_limits():
     c_bounds = effective_bounds(config, "C")
     mn_bounds = effective_bounds(config, "Mn")
     assert si_bounds == {"min": None, "max": pytest.approx(0.245)}
-    assert c_bounds == {"min": None, "max": pytest.approx(0.095)}
+    assert c_bounds == {"min": None, "max": pytest.approx(0.09)}
     assert mn_bounds["min"] == pytest.approx(1.11)
     assert mn_bounds["max"] == pytest.approx(1.29)
 
@@ -141,7 +143,82 @@ def test_control_targets_can_be_disabled_per_element():
     config["control_targets"]["elements"]["C"]["enabled"] = False
     bounds = effective_bounds(config, "C")
     assert bounds["min"] == pytest.approx(0.06)
-    assert bounds["max"] == pytest.approx(0.095)
+    assert bounds["max"] == pytest.approx(0.09)
+
+
+def test_confirmed_process_rules_adjust_targets_and_alloy_bounds():
+    """现场确认的 LP 新算法规则必须先进入线性模型，再交给求解器。"""
+
+    config = {
+        "heat_weight_t": 100,
+        "target": {
+            "C": {"max": 0.10},
+            "Si": {"max": 0.04},
+            "Mn": {"min": 0.50, "max": 0.70},
+            "Ti": {"min": 0.020, "max": 0.025},
+            "Ni": {"min": 0.010, "max": 0.020},
+            "B": {"min": 0.0001, "max": 0.0002},
+            "P": {"max": 0.040},
+            "S": {"max": 0.030},
+            "Als": {"min": 0.010, "max": 0.020},
+        },
+        "residual": {"C": 0.04, "Si": 0, "Mn": 0.10, "Ti": 0, "Ni": 0, "B": 0, "P": 0.010, "S": 0.010, "Als": 0},
+        "recovery_rates": {"C": 0.9, "Si": 0.75, "Mn": 0.98, "Ti": 0.7, "Ni": 0.98, "B": 0.7, "P": 1, "S": 1, "Als": 0.15},
+        "safety_margins": {},
+        "control_targets": {"enabled": False, "margin": 0, "elements": {}},
+        "alloys": [
+            {"name": "硅锰", "price_per_ton": 5000, "max_add_kg_per_t": 30, "bag_size_kg": 0, "composition": {"C": 1.72, "Si": 17.69, "Mn": 65.66}},
+            {"name": "硅铁", "price_per_ton": 5000, "max_add_kg_per_t": 20, "bag_size_kg": 0, "composition": {"Si": 72.23}},
+            {"name": "金属锰", "price_per_ton": 16000, "max_add_kg_per_t": 20, "bag_size_kg": 0, "composition": {"Mn": 90}},
+            {"name": "铝块", "price_per_ton": 22000, "max_add_kg_per_t": 5, "bag_size_kg": 0, "composition": {"Als": 99}},
+            {"name": "钛铁", "price_per_ton": 24000, "max_add_kg_per_t": 5, "bag_size_kg": 0, "composition": {"Ti": 71.58}},
+            {"name": "镍板", "price_per_ton": 130000, "max_add_kg_per_t": 5, "bag_size_kg": 0, "composition": {"Ni": 99}},
+            {"name": "硼铁", "price_per_ton": 24000, "max_add_kg_per_t": 5, "bag_size_kg": 0, "composition": {"B": 18}},
+            {"name": "磷铁", "price_per_ton": 3000, "max_add_kg_per_t": 5, "bag_size_kg": 0, "composition": {"P": 23.94}},
+            {"name": "硫铁", "price_per_ton": 3000, "max_add_kg_per_t": 5, "bag_size_kg": 0, "composition": {"S": 29}},
+        ],
+    }
+
+    model = build_linear_model(config, config["alloys"])
+    bounds_by_name = {alloy["name"]: model.bounds[index] for index, alloy in enumerate(config["alloys"])}
+    constraints = {(item["element"], item["side"]): item for item in model.constraints}
+
+    assert constraints[("C", "max")]["b"] == pytest.approx(0.05)
+    assert constraints[("Ti", "min")]["b"] == pytest.approx(-0.024)
+    assert ("Als", "min") not in constraints
+    assert ("Ni", "min") not in constraints
+    assert ("B", "min") not in constraints
+    assert bounds_by_name["硅锰"] == (0.0, 0.0)
+    assert bounds_by_name["硅铁"] == (0.0, 0.0)
+    assert bounds_by_name["金属锰"] == (0.0, 20.0)
+    assert bounds_by_name["铝块"] == (0.0, 0.0)
+    assert bounds_by_name["镍板"] == (0.0, 0.0)
+    assert bounds_by_name["硼铁"] == (0.0, 0.0)
+    assert bounds_by_name["磷铁"] == (0.0, 0.0)
+    assert bounds_by_name["硫铁"] == (0.0, 0.0)
+
+
+def test_infeasible_diagnostics_respect_process_disabled_alloys():
+    """诊断最大可达量不能把已被工艺规则禁用的合金算进去。"""
+
+    config = {
+        "heat_weight_t": 100,
+        "target": {
+            "Si": {"max": 0.04},
+            "Mn": {"min": 0.50, "max": 0.70},
+        },
+        "residual": {"Si": 0, "Mn": 0.10},
+        "recovery_rates": {"Si": 0.75, "Mn": 0.98},
+        "safety_margins": {},
+        "control_targets": {"enabled": False, "margin": 0, "elements": {}},
+        "alloys": [
+            {"name": "硅锰", "price_per_ton": 5000, "max_add_kg_per_t": 30, "bag_size_kg": 0, "composition": {"Si": 17.69, "Mn": 65.66}},
+        ],
+    }
+
+    diagnostics = diagnose_infeasible(config, config["alloys"])
+
+    assert diagnostics == ["Mn下限无法满足：最多 0.1000%，要求 0.5000%"]
 
 
 def test_control_target_margin_cannot_cross_zero():

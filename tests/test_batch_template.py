@@ -7,7 +7,7 @@ import openpyxl
 from fastapi.testclient import TestClient
 
 from app.batch_template import TEMPLATE_ELEMENTS, export_batch_result, generate_template_workbook, parse_template_workbook, run_batch_optimization
-from app.core import alloy_coeff
+from app.core import alloy_coeff, effective_bounds
 from app.main import app
 
 
@@ -183,6 +183,7 @@ def test_single_target_values_expand_to_bounds_with_element_margins():
     assert q355c_target["V"] == {"min": 0.030, "max": 0.031}
     assert q355c_target["Nb"] == {"min": 0.020, "max": 0.021}
     assert q355c_target["Ti"] == {"min": 0.025, "max": 0.030}
+    assert effective_bounds(report["parsed"]["tasks"][1]["config"], "Ti") == {"min": 0.029, "max": 0.034}
     assert q355c_target["Alt"] == {"min": 0.030, "max": 0.035}
     assert "Ca" not in q355c_target
     assert q355c_target["Cr"] == {"min": 0.20, "max": 0.23}
@@ -340,6 +341,25 @@ def test_recovery_rates_are_matched_per_steelmaking_grade():
     assert tasks[1]["config"]["recovery_rates"]["Si"] == 0.80
     assert abs(alloy_coeff(tasks[0]["config"]["alloys"][0], "Si", tasks[0]["config"]) - 17.69 * 0.75 / 1000) < 1e-12
     assert abs(alloy_coeff(tasks[1]["config"]["alloys"][0], "Si", tasks[1]["config"]) - 17.69 * 0.80 / 1000) < 1e-12
+
+
+def test_26mnb5_zero_si_recovery_is_corrected_to_field_confirmed_value():
+    report = parse_template_workbook(
+        workbook_bytes(
+            task_rows=[
+                ["T001", "26MnB5", 10, 150, "2026-05", "26MnB5", "源表硅回收率 0 是录入错误"],
+            ],
+            target_rows=[
+                ["26MnB5", 1.5, 12, "26MnB5", None, 0.26, 0.23, 0.25, 1.25, 1.27, 0.025, 0.020],
+            ],
+            endpoint_rows=[
+                ["26MnB5", 1.5, 12, "26MnB5", 0.10, 0.0, 0, 0.90, 1.0, 1.0, 0.0, 0.98, 0.98, 0.98, 0.70, 1.0, 1.0, 1.0, 0.96, 0.98, 0.98, 0.98, 0.70, 0.96],
+            ],
+        )
+    )
+
+    assert report["status"] == "ok"
+    assert report["parsed"]["tasks"][0]["config"]["recovery_rates"]["Si"] == 0.8
 
 
 def test_single_target_and_legacy_bounds_for_same_element_conflict():
@@ -577,7 +597,10 @@ def test_download_template_uses_requested_element_scope():
     assert "N" not in alloy_headers
     assert "C/P/S 按上限控制" in rules_text
     assert "Ca 目标值始终不参与约束" in rules_text
-    assert "Als/Alt 回收率固定按 0.15" in rules_text
+    assert "Ti 目标自动加 0.004" in rules_text
+    assert "LP 按 C目标-0.01 控碳" in rules_text
+    assert "铝块按现场单独录入" in rules_text
+    assert "26MnB5 的 Si 回收率若录成 0" in rules_text
     assert "旧模板里的 N 上传时会被忽略" in rules_text
 
 

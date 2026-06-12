@@ -37,7 +37,9 @@ SINGLE_TARGET_MARGINS = {
     "B": 0.0002,
     "Sb": 0.01,
 }
+LOW_TARGET_NO_ADDITION_THRESHOLDS = {"Ni": 0.02, "Cu": 0.02, "Mo": 0.02, "Sb": 0.02, "B": 0.0002}
 SI_UPPER_ONLY_THRESHOLD = 0.05
+FIELD_CONFIRMED_RECOVERY_OVERRIDES = {("26MNB5", "Si"): 0.8}
 BUSINESS_SHEETS = [
     "01_批量任务",
     "02_目标成分上下限",
@@ -138,8 +140,9 @@ def generate_template_workbook() -> bytes:
             ["模板版本", TEMPLATE_VERSION],
             ["填写流程", "下载模板 -> 填业务数据 -> 上传预检 -> 预检通过后批量计算 -> 导出结果"],
             ["单位规则", "成分按百分数数值填写，例如 0.23 表示 0.23%；合金品位 65.66 表示 65.66%。"],
-            ["外部单值规则", "目标成分表使用 元素目标 单值列：C/P/S 按上限控制；Ca 目标值始终不参与约束；Si<=0.05 按上限控制，Si>0.05 按下限并自动加 0.02 上限余量；其他合金化元素按下限并自动加元素余量。旧的 元素下限/元素上限 上传列仍兼容。"],
-            ["合金用量公式", "kg/t = (目标成分 - 转炉终点成分) / 合金品位 / 回收率 * 1000；Als/Alt 回收率固定按 0.15 计算，其他参与计算元素必须在转炉终点与回收率表填写回收率。"],
+            ["外部单值规则", "目标成分表使用 元素目标 单值列：C/P/S 按上限控制；Ca 目标值始终不参与约束；Si<=0.05 按上限控制，Si>0.05 按下限并自动加 0.02 上限余量；Ti 目标自动加 0.004 安全余量；其他合金化元素按下限并自动加元素余量。旧的 元素下限/元素上限 上传列仍兼容。"],
+            ["现场工艺规则", "LP 按 C目标-0.01 控碳；Si目标<=0.04 时禁用硅锰/硅铁；铝块按现场单独录入，不参与 LP 自动优化；Ni/Cu/Mo/Sb<=0.02、B<=0.0002 时不投对应合金；P<=0.040、S<=0.030 时不投磷硫铁合金。"],
+            ["合金用量公式", "kg/t = (目标成分 - 转炉终点成分) / 合金品位 / 回收率 * 1000；26MnB5 的 Si 回收率若录成 0 会按现场确认值 0.8 修正；其他参与计算元素必须在转炉终点与回收率表填写回收率。"],
             ["标准元素", "标准模板仅保留 C, Si, Mn, P, S, V, Nb, Ti, Als, Alt, Ca, Cr, Ni, Cu, Mo, B, Sb；旧模板里的 N 上传时会被忽略。"],
             ["P/S 规则", "P/S 通常只填写上限；转炉终点已超过上限时任务直接失败。"],
             ["投料方式", "投料方式只能填写 连续 或 整袋；连续物料袋重kg留空或填 0，整袋物料袋重kg必须大于 0。"],
@@ -573,7 +576,9 @@ def parse_target_rows(rows: list[dict], errors: list[dict]) -> list[dict]:
             number = optional_number(value, "02_目标成分上下限", row["_row"], header, errors, minimum=0, maximum=10)
             if number is None:
                 continue
-            target[element] = target_bounds_from_single_value(element, number)
+            bounds = target_bounds_from_single_value(element, number)
+            if bounds:
+                target[element] = bounds
             single_target_elements.add(element)
         for header, value in row.items():
             parsed = element_header(header, ("下限", "上限"))
@@ -632,6 +637,9 @@ def target_bounds_from_single_value(element: str, value: float) -> dict[str, flo
     """把外部单值目标转换成优化器需要的上下限。"""
 
     target = normalized_float(value)
+    threshold = LOW_TARGET_NO_ADDITION_THRESHOLDS.get(element)
+    if threshold is not None and target <= threshold:
+        return {}
     if element in SINGLE_TARGET_UPPER_ONLY_ELEMENTS:
         return {"max": target}
     if element == "Si" and target <= SI_UPPER_ONLY_THRESHOLD:
@@ -672,8 +680,18 @@ def parse_endpoint_rows(rows: list[dict], errors: list[dict]) -> list[dict]:
                 number = optional_number(value, "03_转炉终点与回收率", row["_row"], header, errors, minimum=0, maximum=1.2)
                 if number is not None:
                     recovery[element] = number
+        apply_field_confirmed_recovery_overrides(row, recovery)
         endpoints.append({**business_key(row, "03_转炉终点与回收率", errors), "residual": residual, "recoveryRates": recovery})
     return endpoints
+
+
+def apply_field_confirmed_recovery_overrides(row: dict, recovery: dict[str, float]) -> None:
+    """修正已由现场确认的数据录入错误。"""
+
+    steelmaking_grade = (optional_text(row.get("炼钢牌号")) or "").upper()
+    for (grade, element), value in FIELD_CONFIRMED_RECOVERY_OVERRIDES.items():
+        if steelmaking_grade == grade and float(recovery.get(element) or 0) == 0:
+            recovery[element] = value
 
 
 def parse_alloy_rows(rows: list[dict], errors: list[dict], warnings: list[dict]) -> list[dict]:
