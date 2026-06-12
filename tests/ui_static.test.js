@@ -533,3 +533,56 @@ test('整袋模式下袋重必须大于 0 kg', () => {
   vm.runInNewContext(script, sandbox, { filename: 'ui.js' });
   assert.throws(() => sandbox.window.AlloyCostUI.readAlloyInputs(config), /袋重必须大于 0 kg/);
 });
+
+test('prototype.html 暴露可编辑的现场工艺规则输入', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'prototype.html'), 'utf8');
+  assert.match(html, /id="processRulesCard"/);
+  assert.match(html, /id="processRulesEnabled"[^>]*checked/);
+  assert.match(html, /id="manualAluminumEnabled"[^>]*checked/);
+  assert.match(html, /id="carbonTargetMargin"[^>]*value="0\.005"/);
+  assert.match(html, /id="tiSafetyAddition"[^>]*value="0\.005"/);
+  assert.match(html, /id="disableSiliconAlloysSiMax"[^>]*value="0\.04"/);
+  assert.match(html, /id="traceBMax"[^>]*value="0\.0002"/);
+});
+
+test('页面工艺规则输入会写回 process_rules，缺控件时保留运行时配置', () => {
+  const vm = require('node:vm');
+  const script = fs.readFileSync(path.join(__dirname, '..', 'ui.js'), 'utf8');
+  function field(value) { return { value: value, dataset: {}, disabled: false }; }
+  function toggle(checked) { return { checked: checked, dataset: {}, disabled: false }; }
+  const elements = {
+    heatWeight: { value: '132.2' }, resC: { value: '0.04' }, resSi: { value: '0' }, resMn: { value: '0.08' }, resCr: { value: '0' }, resP: { value: '0.008' }, resS: { value: '0.008' },
+    cMin: { value: '0.06' }, cMax: { value: '0.10' }, siMin: { value: '0.15' }, siMax: { value: '0.25' },
+    mnMin: { value: '1.10' }, mnMax: { value: '1.30' }, crMin: { value: '0.35' }, crMax: { value: '0.45' }, pMax: { value: '0.025' }, sMax: { value: '0.020' },
+    controlSiEnabled: { checked: true }, controlCEnabled: { checked: true }, controlSiValue: { value: '0.25' }, controlCValue: { value: '0.10' }, controlMargin: { value: '0' },
+    controlSiRow: { classList: { toggle() {} } }, controlCRow: { classList: { toggle() {} } },
+    processRulesEnabled: toggle(true), manualAluminumEnabled: toggle(false),
+    carbonTargetMargin: field('0.006'), tiSafetyAddition: field('0.007'),
+    disableSiliconAlloysSiMax: field('0.03'), phosphorusAlloyMax: field('0.045'), sulfurAlloyMax: field('0.035'),
+    traceNiMax: field('0.018'), traceCuMax: field('0.019'), traceMoMax: field('0.021'), traceSbMax: field('0.022'),
+    alloyList: { innerHTML: '' }, runStatus: { textContent: '', style: {} }
+  };
+  const sandbox = {
+    window: {},
+    document: {
+      addEventListener() {},
+      getElementById(id) { return elements[id] || { value: '0', innerHTML: '', textContent: '', style: {}, className: '' }; },
+      querySelectorAll() { return []; },
+      querySelector() { return null; }
+    },
+  };
+  vm.runInNewContext(script, sandbox, { filename: 'ui.js' });
+  sandbox.window.AlloyCostUI.setRuntimeConfigForTest(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8')));
+  const config = sandbox.window.AlloyCostUI.readInput();
+  assert.equal(config.process_rules.enabled, true);
+  assert.equal(config.process_rules.manual_aluminum, false);
+  assert.equal(config.process_rules.carbon_target_margin, 0.006);
+  assert.equal(config.process_rules.ti_safety_addition, 0.007);
+  assert.equal(config.process_rules.disable_silicon_alloys_si_max, 0.03);
+  assert.equal(config.process_rules.phosphorus_alloy_max, 0.045);
+  assert.equal(config.process_rules.sulfur_alloy_max, 0.035);
+  assert.equal(config.process_rules.trace_alloy_thresholds.Ni, 0.018);
+  assert.equal(config.process_rules.trace_alloy_thresholds.Sb, 0.022);
+  // traceBMax 控件缺失，必须保留运行时配置原值。
+  assert.equal(config.process_rules.trace_alloy_thresholds.B, 0.0002);
+});

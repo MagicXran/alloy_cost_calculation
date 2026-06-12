@@ -54,6 +54,7 @@
     setElementValues('res', config.residual || {}, { C: 'C', Si: 'Si', Mn: 'Mn', Cr: 'Cr', P: 'P', S: 'S' });
     setBoundValues(config.target || {});
     setControlTargets(config);
+    setProcessRules(config);
     var badge = byId('heatWeightBadge');
     if (badge) badge.textContent = fmt(config.heat_weight_t, 1) + ' t';
   }
@@ -138,6 +139,7 @@
       P: { max: num('pMax') }, S: { max: num('sMax') }
     };
     config.control_targets = readControlTargets();
+    config.process_rules = readProcessRules(config.process_rules);
     readAlloyInputs(config);
 
     return config;
@@ -154,6 +156,87 @@
         C: { enabled: cEnabled, value: num('controlCValue') }
       }
     };
+  }
+
+  // 现场工艺规则里的固定数字必须可在页面调整，这里回填到对应输入。
+  var PROCESS_RULE_NUMERIC_FIELDS = {
+    carbonTargetMargin: 'carbon_target_margin',
+    disableSiliconAlloysSiMax: 'disable_silicon_alloys_si_max',
+    tiSafetyAddition: 'ti_safety_addition',
+    phosphorusAlloyMax: 'phosphorus_alloy_max',
+    sulfurAlloyMax: 'sulfur_alloy_max'
+  };
+  var PROCESS_RULE_TRACE_FIELDS = {
+    traceNiMax: 'Ni',
+    traceCuMax: 'Cu',
+    traceMoMax: 'Mo',
+    traceSbMax: 'Sb',
+    traceBMax: 'B'
+  };
+
+  function setProcessRules(config) {
+    var rules = config.process_rules || {};
+    setChecked('processRulesEnabled', rules.enabled !== false);
+    setChecked('manualAluminumEnabled', rules.manual_aluminum !== false);
+    Object.keys(PROCESS_RULE_NUMERIC_FIELDS).forEach(function (id) {
+      setValue(id, rules[PROCESS_RULE_NUMERIC_FIELDS[id]]);
+    });
+    var thresholds = rules.trace_alloy_thresholds || {};
+    Object.keys(PROCESS_RULE_TRACE_FIELDS).forEach(function (id) {
+      setValue(id, thresholds[PROCESS_RULE_TRACE_FIELDS[id]]);
+    });
+    syncProcessRuleFields();
+  }
+
+  // 只有真实 DOM 控件（带 dataset）才覆盖配置，缺控件时保留运行时配置原值。
+  function isRealField(input) {
+    return !!(input && input.dataset);
+  }
+
+  function readNumericField(id, fallback) {
+    var input = byId(id);
+    if (!isRealField(input)) return fallback;
+    var raw = String(input.value === undefined || input.value === null ? '' : input.value).trim();
+    if (raw === '') return fallback;
+    var parsed = Number(raw);
+    if (!Number.isFinite(parsed)) throw new Error(id + ' 不是有效数字');
+    return parsed;
+  }
+
+  function readToggleField(id, fallback) {
+    var input = byId(id);
+    if (!isRealField(input)) return fallback;
+    return !!input.checked;
+  }
+
+  function readProcessRules(base) {
+    var rules = base ? clone(base) : {};
+    rules.enabled = readToggleField('processRulesEnabled', rules.enabled !== false);
+    rules.manual_aluminum = readToggleField('manualAluminumEnabled', rules.manual_aluminum !== false);
+    Object.keys(PROCESS_RULE_NUMERIC_FIELDS).forEach(function (id) {
+      var key = PROCESS_RULE_NUMERIC_FIELDS[id];
+      rules[key] = readNumericField(id, rules[key]);
+    });
+    var thresholds = rules.trace_alloy_thresholds ? clone(rules.trace_alloy_thresholds) : {};
+    Object.keys(PROCESS_RULE_TRACE_FIELDS).forEach(function (id) {
+      var element = PROCESS_RULE_TRACE_FIELDS[id];
+      thresholds[element] = readNumericField(id, thresholds[element]);
+    });
+    rules.trace_alloy_thresholds = thresholds;
+    return rules;
+  }
+
+  function syncProcessRuleFields() {
+    var enabled = readToggleField('processRulesEnabled', true);
+    var ids = ['manualAluminumEnabled']
+      .concat(Object.keys(PROCESS_RULE_NUMERIC_FIELDS))
+      .concat(Object.keys(PROCESS_RULE_TRACE_FIELDS));
+    ids.forEach(function (id) {
+      var input = byId(id);
+      if (isRealField(input)) input.disabled = !enabled;
+    });
+    var card = byId('processRulesCard');
+    if (card && card.classList) card.classList.toggle('is-disabled', !enabled);
   }
 
   // 合金价格和袋重是求解输入，不是展示文本；必须从控件写回配置。
@@ -251,6 +334,7 @@
       document.addEventListener('change', function (event) {
         if (event.target && event.target.matches('[data-alloy-bag-mode-index]')) syncBagModeLabels();
         if (event.target && event.target.matches('[data-control-target]')) syncControlTargetFields();
+        if (event.target && event.target.matches('[data-process-rule]')) syncProcessRuleFields();
       });
       return solveRemote();
     }).catch(function (error) {
@@ -666,7 +750,7 @@
     setTimeout(solveRemote, 0);
   }
 
-  window.AlloyCostUI = { readInput: readInput, readAlloyInputs: readAlloyInputs, percentInRange: percentInRange, syncBagModeLabels: syncBagModeLabels, syncControlTargetFields: syncControlTargetFields, activeBoundNote: activeBoundNote, effectiveBounds: effectiveBounds, renderResult: renderResult, renderQuality: renderQuality, requestOptimize: requestOptimize, requestConfig: requestConfig, initializeFromConfig: initializeFromConfig, setRuntimeConfigForTest: setRuntimeConfigForTest, apiBaseUrl: apiBaseUrl, requestValidateTemplate: requestValidateTemplate, requestBatchOptimize: requestBatchOptimize, renderBatchPreview: renderBatchPreview, renderBatchIssues: renderBatchIssues };
+  window.AlloyCostUI = { readInput: readInput, readAlloyInputs: readAlloyInputs, percentInRange: percentInRange, syncBagModeLabels: syncBagModeLabels, syncControlTargetFields: syncControlTargetFields, syncProcessRuleFields: syncProcessRuleFields, setProcessRules: setProcessRules, readProcessRules: readProcessRules, activeBoundNote: activeBoundNote, effectiveBounds: effectiveBounds, renderResult: renderResult, renderQuality: renderQuality, requestOptimize: requestOptimize, requestConfig: requestConfig, initializeFromConfig: initializeFromConfig, setRuntimeConfigForTest: setRuntimeConfigForTest, apiBaseUrl: apiBaseUrl, requestValidateTemplate: requestValidateTemplate, requestBatchOptimize: requestBatchOptimize, renderBatchPreview: renderBatchPreview, renderBatchIssues: renderBatchIssues };
   window.solveRemote = solveRemote;
   window.requestSolveRemote = requestSolveRemote;
   window.selectMode = selectMode;

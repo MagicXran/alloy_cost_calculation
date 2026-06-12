@@ -131,7 +131,7 @@ def test_control_targets_replace_si_c_ranges_with_upper_limits():
     c_bounds = effective_bounds(config, "C")
     mn_bounds = effective_bounds(config, "Mn")
     assert si_bounds == {"min": None, "max": pytest.approx(0.245)}
-    assert c_bounds == {"min": None, "max": pytest.approx(0.09)}
+    assert c_bounds == {"min": None, "max": pytest.approx(0.095)}
     assert mn_bounds["min"] == pytest.approx(1.11)
     assert mn_bounds["max"] == pytest.approx(1.29)
 
@@ -143,7 +143,7 @@ def test_control_targets_can_be_disabled_per_element():
     config["control_targets"]["elements"]["C"]["enabled"] = False
     bounds = effective_bounds(config, "C")
     assert bounds["min"] == pytest.approx(0.06)
-    assert bounds["max"] == pytest.approx(0.09)
+    assert bounds["max"] == pytest.approx(0.095)
 
 
 def test_confirmed_process_rules_adjust_targets_and_alloy_bounds():
@@ -183,8 +183,8 @@ def test_confirmed_process_rules_adjust_targets_and_alloy_bounds():
     bounds_by_name = {alloy["name"]: model.bounds[index] for index, alloy in enumerate(config["alloys"])}
     constraints = {(item["element"], item["side"]): item for item in model.constraints}
 
-    assert constraints[("C", "max")]["b"] == pytest.approx(0.05)
-    assert constraints[("Ti", "min")]["b"] == pytest.approx(-0.024)
+    assert constraints[("C", "max")]["b"] == pytest.approx(0.055)
+    assert constraints[("Ti", "min")]["b"] == pytest.approx(-0.025)
     assert ("Als", "min") not in constraints
     assert ("Ni", "min") not in constraints
     assert ("B", "min") not in constraints

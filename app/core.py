@@ -19,10 +19,10 @@ EPS = 1e-8
 MAX_PRICE_PER_TON = 1_000_000
 DEFAULT_PROCESS_RULES = {
     "enabled": True,
-    "carbon_target_margin": 0.01,
+    "carbon_target_margin": 0.005,
     "disable_silicon_alloys_si_max": 0.04,
     "manual_aluminum": True,
-    "ti_safety_addition": 0.004,
+    "ti_safety_addition": 0.005,
     "trace_alloy_thresholds": {"Ni": 0.02, "Cu": 0.02, "Mo": 0.02, "Sb": 0.02, "B": 0.0002},
     "phosphorus_alloy_max": 0.040,
     "sulfur_alloy_max": 0.030,

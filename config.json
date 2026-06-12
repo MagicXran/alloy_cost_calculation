@@ -122,10 +122,10 @@
 
   "process_rules": {
     "enabled": true,
-    "carbon_target_margin": 0.01,
+    "carbon_target_margin": 0.005,
     "disable_silicon_alloys_si_max": 0.04,
     "manual_aluminum": true,
-    "ti_safety_addition": 0.004,
+    "ti_safety_addition": 0.005,
     "trace_alloy_thresholds": {
       "Ni": 0.02,
       "Cu": 0.02,
