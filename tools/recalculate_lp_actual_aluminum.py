@@ -1,0 +1,762 @@
+"""Recalculate alloy workbook rows with the current LP rules and actual Al usage.
+
+The output is intentionally one worksheet: row-level evidence, LP result,
+comparison, alloy deltas, and explanation stay together for audit.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from collections import Counter, defaultdict
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import openpyxl
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.batch_template import (
+    FIELD_CONFIRMED_RECOVERY_OVERRIDES,
+    FIXED_RECOVERY_RATES,
+    target_bounds_from_single_value,
+)
+from app.core import (
+    build_linear_model,
+    chemistry_checks,
+    chemistry_from_vector,
+    cost_for,
+    diagnose_infeasible,
+    effective_bounds,
+)
+from app.solvers import get_solver
+
+
+SOURCE_WORKBOOK = ROOT / "合金计算.xlsx"
+ALUMINUM_WORKBOOK = ROOT / "副本4.铝耗分析(1).xlsx"
+DEFAULT_OUTPUT = ROOT / "outputs" / "lp_actual_aluminum" / "合金计算_LP新算法_实际铝耗对比_20260613.xlsx"
+
+TARGET_COLUMNS = {
+    "C": "I",
+    "Si": "J",
+    "Mn": "K",
+    "P": "L",
+    "S": "M",
+    "V": "N",
+    "Nb": "O",
+    "Ti": "P",
+    "Als": "Q",
+    "Alt": "R",
+    "Ca": "S",
+    "Cr": "T",
+    "Ni": "U",
+    "Cu": "V",
+    "Mo": "W",
+    "B": "X",
+    "Sb": "Y",
+    "N": "Z",
+}
+RECOVERY_COLUMNS = {
+    "Si": "K",
+    "Mn": "L",
+    "V": "M",
+    "Nb": "N",
+    "Ti": "O",
+    "Cr": "P",
+    "Ni": "Q",
+    "Cu": "R",
+    "Mo": "S",
+    "B": "T",
+    "Sb": "U",
+    "P": "V",
+    "S": "W",
+    "C": "X",
+}
+ALLOY_COLUMNS = [
+    "AB",
+    "AC",
+    "AD",
+    "AE",
+    "AF",
+    "AG",
+    "AH",
+    "AI",
+    "AJ",
+    "AK",
+    "AL",
+    "AM",
+    "AN",
+    "AO",
+    "AP",
+    "AQ",
+    "AR",
+    "AS",
+    "AT",
+    "AU",
+]
+IGNORED_TARGET_ELEMENTS = {"Ca", "N"}
+SKIPPED_ALLOYS = {"稀土合金"}
+
+# Composition values are the explicit constants used by the legacy workbook
+# formula columns. Al is kept in the alloy list but later replaced by matched
+# actual usage because current process_rules mark aluminum as manual.
+ALLOY_COMPOSITIONS = {
+    "硅锰": {"C": 1.72, "Si": 17.69, "Mn": 65.66},
+    "高碳锰铁": {"C": 6.69, "Mn": 74.60},
+    "中碳锰铁": {"C": 1.50, "Mn": 78.54},
+    "低碳锰铁": {"C": 0.64, "Mn": 81.19},
+    "金属锰": {"Mn": 90.00},
+    "硅铁合金": {"Si": 72.23},
+    "铝块": {"Als": 99.00, "Alt": 99.00},
+    "钒铁": {"V": 51.17},
+    "铌铁": {"Nb": 65.04},
+    "钛铁": {"Ti": 71.58},
+    "高碳铬铁": {"C": 10.00, "Cr": 52.00},
+    "低碳铬铁": {"C": 0.12, "Cr": 59.44},
+    "镍板": {"Ni": 99.00},
+    "铜板": {"Cu": 99.00},
+    "钼铁": {"Mo": 57.70},
+    "硼铁": {"B": 18.00},
+    "锑锭": {"Sb": 99.50},
+    "磷铁": {"P": 23.94},
+    "硫铁": {"S": 29.00},
+}
+
+
+@dataclass(frozen=True)
+class AluminumMatch:
+    value: float | None
+    source_row: int | None
+    source_column: str
+    method: str
+    warning: str
+
+
+def optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def rounded(value: float | None, digits: int = 6) -> float | None:
+    if value is None:
+        return None
+    return round(float(value), digits)
+
+
+def format_delta(value: float | None, digits: int = 3) -> str:
+    if value is None:
+        return "空"
+    sign = "+" if value > 0 else ""
+    return f"{sign}{value:.{digits}f}"
+
+
+def load_process_rules() -> dict[str, Any]:
+    config = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
+    return config.get("process_rules") or {}
+
+
+def read_aluminum_matches() -> tuple[dict[str, dict[str, Any]], dict[int, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    workbook = openpyxl.load_workbook(ALUMINUM_WORKBOOK, data_only=True, read_only=False)
+    sheet = workbook["铝耗"]
+    first_by_grade: dict[str, dict[str, Any]] = {}
+    by_row: dict[int, dict[str, Any]] = {}
+    duplicates: dict[str, list[dict[str, Any]]] = defaultdict(list)
+
+    for row in range(4, sheet.max_row + 1):
+        grade = sheet.cell(row, 6).value
+        if not grade:
+            continue
+        record = {
+            "row": row,
+            "grade": str(grade).strip(),
+            "value": optional_float(sheet.cell(row, 32).value),  # AF: 实际铝铝耗
+        }
+        by_row[row] = record
+        first_by_grade.setdefault(record["grade"], record)
+        duplicates[record["grade"]].append(record)
+
+    return first_by_grade, by_row, {grade: records for grade, records in duplicates.items() if len(records) > 1}
+
+
+def match_aluminum(
+    excel_row: int,
+    grade: str,
+    first_by_grade: dict[str, dict[str, Any]],
+    by_row: dict[int, dict[str, Any]],
+    duplicates: dict[str, list[dict[str, Any]]],
+) -> AluminumMatch:
+    # The aluminum workbook's main sheet is a one-row-shifted copy of
+    # `1.合金成本` for most rows. Prefer this exact aligned match; fall back to
+    # grade-first lookup, matching the user's F-column keyed requirement.
+    aligned = by_row.get(excel_row - 1)
+    if aligned and aligned["grade"] == grade:
+        record = aligned
+        method = "同位置F列匹配"
+    else:
+        record = first_by_grade.get(grade)
+        method = "按炼钢牌号首条匹配" if record else "未匹配"
+
+    warning = ""
+    if grade in duplicates:
+        values = sorted({round(item["value"], 12) for item in duplicates[grade] if item["value"] is not None})
+        if len(values) > 1:
+            warning = f"同炼钢牌号多条铝耗且数值不同：{values}"
+
+    if not record:
+        return AluminumMatch(None, None, "铝耗!AF", method, warning)
+    return AluminumMatch(record["value"], record["row"], "铝耗!AF", method, warning)
+
+
+def workbook_alloys(cost_sheet) -> list[dict[str, Any]]:
+    alloys: list[dict[str, Any]] = []
+    for column in ALLOY_COLUMNS:
+        name = cost_sheet[f"{column}2"].value
+        if not name or name in SKIPPED_ALLOYS:
+            continue
+        name = str(name)
+        composition = ALLOY_COMPOSITIONS.get(name)
+        if not composition:
+            continue
+        alloys.append(
+            {
+                "name": name,
+                "source_column": column,
+                "price_per_ton": optional_float(cost_sheet[f"{column}4"].value) or 0.0,
+                "composition": composition,
+                "enabled": True,
+                "addition_sequence": 99,
+                "bag_size_kg": 0,
+                "max_add_kg_per_t": 200,
+                "recovery_overrides": {},
+                "notes": "",
+            }
+        )
+    return alloys
+
+
+def apply_field_recovery_overrides(grade: str, recovery: dict[str, float]) -> list[str]:
+    applied: list[str] = []
+    normalized_grade = grade.upper()
+    for (target_grade, element), value in FIELD_CONFIRMED_RECOVERY_OVERRIDES.items():
+        if normalized_grade == target_grade and float(recovery.get(element) or 0) == 0:
+            recovery[element] = value
+            applied.append(f"{element}=0->{value}")
+    return applied
+
+
+def build_row_config(
+    cost_sheet,
+    param_sheet,
+    row: int,
+    grade: str,
+    alloys: list[dict[str, Any]],
+    process_rules: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, float | None], list[str]]:
+    target: dict[str, dict[str, float]] = {}
+    raw_targets: dict[str, float | None] = {}
+    for element, column in TARGET_COLUMNS.items():
+        if element in IGNORED_TARGET_ELEMENTS:
+            continue
+        value = optional_float(cost_sheet[f"{column}{row}"].value)
+        raw_targets[element] = value
+        if value is None:
+            continue
+        bounds = target_bounds_from_single_value(element, value)
+        if bounds:
+            target[element] = bounds
+
+    recovery: dict[str, float] = {}
+    for element, column in RECOVERY_COLUMNS.items():
+        value = optional_float(param_sheet[f"{column}{row}"].value)
+        if value is not None:
+            recovery[element] = value
+    recovery_overrides = apply_field_recovery_overrides(grade, recovery)
+    recovery.update(FIXED_RECOVERY_RATES)
+
+    residual = {
+        "C": optional_float(param_sheet[f"I{row}"].value) or 0.0,
+        "Mn": optional_float(param_sheet[f"J{row}"].value) or 0.0,
+    }
+    used_elements = set(target)
+    for alloy in alloys:
+        used_elements.update(alloy["composition"])
+    for element in used_elements:
+        residual.setdefault(element, 0.0)
+        recovery.setdefault(element, 1.0)
+
+    config = {
+        "heat_weight_t": 150,
+        "steel_weight_kg": 1000,
+        "ignored_elements": sorted(IGNORED_TARGET_ELEMENTS),
+        "target": target,
+        "raw_targets": raw_targets,
+        "residual": residual,
+        "recovery_rates": recovery,
+        "safety_margins": {element: {"low": 0, "high": 0} for element in target},
+        "control_targets": {"enabled": False, "margin": 0, "elements": {}},
+        "process_rules": process_rules,
+        "alloys": alloys,
+        "milp_settings": {"default_bag_size_kg": 25, "enable_bag_rounding": False},
+        "temperature_drop": {"enabled": False},
+    }
+    return config, raw_targets, recovery_overrides
+
+
+def constraint_text(config: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for element in TARGET_COLUMNS:
+        if element in IGNORED_TARGET_ELEMENTS:
+            continue
+        bounds = effective_bounds(config, element)
+        if bounds["min"] is None and bounds["max"] is None:
+            continue
+        if bounds["min"] is not None and bounds["max"] is not None:
+            parts.append(f"{element}[{bounds['min']:.6g},{bounds['max']:.6g}]")
+        elif bounds["min"] is not None:
+            parts.append(f"{element}>={bounds['min']:.6g}")
+        else:
+            parts.append(f"{element}<={bounds['max']:.6g}")
+    return "; ".join(parts)
+
+
+def chemistry_text(checks: list[dict[str, Any]]) -> str:
+    shown = []
+    for check in checks:
+        minimum = check.get("min")
+        maximum = check.get("max")
+        if minimum is None and maximum is None:
+            continue
+        status = "OK" if check.get("ok") else "NG"
+        shown.append(f"{check['element']}={check['value']:.6g}({status})")
+    return "; ".join(shown)
+
+
+def top_alloy_changes(alloys: list[dict[str, Any]], old_x: list[float], new_x: list[float], limit: int = 5) -> list[str]:
+    changes = []
+    for index, alloy in enumerate(alloys):
+        delta = new_x[index] - old_x[index]
+        if abs(delta) < 1e-6:
+            continue
+        changes.append((abs(delta), alloy["name"], old_x[index], new_x[index], delta))
+    changes.sort(reverse=True)
+    return [f"{name}:{old:.3f}->{new:.3f}({format_delta(delta)})" for _, name, old, new, delta in changes[:limit]]
+
+
+def explain_row(
+    status: str,
+    grade: str,
+    config: dict[str, Any],
+    alloys: list[dict[str, Any]],
+    old_x: list[float],
+    new_x: list[float] | None,
+    old_chemistry: dict[str, float] | None,
+    old_cost: float,
+    new_cost: float | None,
+    aluminum: AluminumMatch,
+    recovery_overrides: list[str],
+    diagnostics: list[str],
+) -> str:
+    if status != "ok":
+        return "不可行：" + "；".join(diagnostics)
+
+    assert new_x is not None
+    reasons: list[str] = []
+    old_al = old_x[[alloy["name"] for alloy in alloys].index("铝块")]
+    actual_al = aluminum.value or 0.0
+    if abs(actual_al - old_al) > 1e-6:
+        reasons.append(
+            f"铝块按实耗替换：原Excel AH={old_al:.3f}kg/t，{aluminum.source_column}{aluminum.source_row}={actual_al:.3f}kg/t，差{format_delta(actual_al - old_al)}kg/t"
+        )
+    else:
+        reasons.append(f"铝块实耗与原Excel一致或接近：{actual_al:.3f}kg/t")
+
+    if recovery_overrides:
+        reasons.append(f"现场确认回收率修正：{grade} " + "、".join(recovery_overrides))
+
+    c_bounds = effective_bounds(config, "C")
+    if c_bounds["max"] is not None:
+        c_target = (config.get("raw_targets") or {}).get("C")
+        prefix = f"C上限按目标{c_target:.3f}-0.005={c_bounds['max']:.3f}"
+        if old_chemistry and old_chemistry.get("C", 0.0) > c_bounds["max"] + 1e-6:
+            reasons.append(prefix + f"，原Excel按当前成分口径估算C={old_chemistry['C']:.3f}，会被新约束压住")
+        else:
+            reasons.append(prefix)
+
+    si_target = (config.get("raw_targets") or {}).get("Si")
+    if si_target is not None and si_target <= float(config["process_rules"]["disable_silicon_alloys_si_max"]) + 1e-8:
+        reasons.append(f"Si目标={si_target:.3f}<=禁硅阈值，硅锰/硅铁变量上限置0")
+
+    changes = top_alloy_changes(alloys, old_x, new_x)
+    if changes:
+        reasons.append("主要投料变化：" + "；".join(changes))
+
+    if new_cost is not None:
+        delta = new_cost - old_cost
+        direction = "下降" if delta < -1e-6 else "上升" if delta > 1e-6 else "基本持平"
+        reasons.append(f"成本{direction}：新-旧={format_delta(delta)}元/t")
+
+    if aluminum.warning:
+        reasons.append("铝耗匹配提示：" + aluminum.warning)
+    return "；".join(reasons)
+
+
+def compute_rows() -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    process_rules = load_process_rules()
+    first_aluminum, aluminum_by_row, aluminum_duplicates = read_aluminum_matches()
+    source_workbook = openpyxl.load_workbook(SOURCE_WORKBOOK, data_only=True, read_only=False)
+    cost_sheet = source_workbook["1.合金成本"]
+    param_sheet = source_workbook["炼钢参数表"]
+    alloys = workbook_alloys(cost_sheet)
+    solver = get_solver("highs")
+
+    rows: list[dict[str, Any]] = []
+    details: list[dict[str, Any]] = []
+    counters: Counter[str] = Counter()
+
+    for row in range(5, 328):
+        grade_cell = cost_sheet[f"F{row}"].value
+        if not grade_cell:
+            continue
+        grade = str(grade_cell).strip()
+        aluminum = match_aluminum(row, grade, first_aluminum, aluminum_by_row, aluminum_duplicates)
+        config, raw_targets, recovery_overrides = build_row_config(cost_sheet, param_sheet, row, grade, alloys, process_rules)
+        old_x = [optional_float(cost_sheet[f"{alloy['source_column']}{row}"].value) or 0.0 for alloy in alloys]
+        old_cost = optional_float(cost_sheet[f"AW{row}"].value) or 0.0
+        old_total = optional_float(cost_sheet[f"AV{row}"].value) or 0.0
+        old_chemistry = chemistry_from_vector(config, alloys, old_x)
+        constraints = constraint_text(config)
+
+        diagnostics: list[str] = []
+        status = "ok"
+        new_x: list[float] | None = None
+        new_auto_x: list[float] | None = None
+        new_total: float | None = None
+        new_cost: float | None = None
+        new_auto_total: float | None = None
+        new_auto_cost: float | None = None
+        new_chemistry_checks: list[dict[str, Any]] = []
+
+        raw_solution = solver.solve_lp(build_linear_model(config, alloys).as_dict())
+        if raw_solution is None:
+            status = "infeasible"
+            diagnostics = diagnose_infeasible(config, alloys, solver)
+            counters["infeasible"] += 1
+        else:
+            new_auto_x = [max(0.0, value or 0.0) for value in raw_solution.x]
+            new_x = list(new_auto_x)
+            for index, alloy in enumerate(alloys):
+                if alloy["name"] == "铝块":
+                    new_x[index] = aluminum.value or 0.0
+                    new_auto_x[index] = 0.0
+            new_total = sum(new_x)
+            new_cost = cost_for(alloys, new_x)
+            new_auto_total = sum(new_auto_x)
+            new_auto_cost = cost_for(alloys, new_auto_x)
+            new_chemistry = chemistry_from_vector(config, alloys, new_x)
+            new_chemistry_checks = chemistry_checks(config, new_chemistry)
+            counters["ok"] += 1
+
+        if aluminum.value is None:
+            counters["missing_aluminum"] += 1
+        if aluminum.warning:
+            counters["aluminum_duplicate_value_warning"] += 1
+        if recovery_overrides:
+            counters["recovery_overrides"] += 1
+
+        explanation = explain_row(
+            status,
+            grade,
+            config,
+            alloys,
+            old_x,
+            new_x,
+            old_chemistry,
+            old_cost,
+            new_cost,
+            aluminum,
+            recovery_overrides,
+            diagnostics,
+        )
+
+        record = {
+            "Excel行号": row,
+            "序号": cost_sheet[f"A{row}"].value,
+            "适用牌号": cost_sheet[f"B{row}"].value,
+            "分类序号": cost_sheet[f"C{row}"].value,
+            "最小厚度mm": cost_sheet[f"D{row}"].value,
+            "最大厚度mm": cost_sheet[f"E{row}"].value,
+            "炼钢牌号": grade,
+            "钢种类型": cost_sheet[f"G{row}"].value,
+            "液相线温度℃": cost_sheet[f"H{row}"].value,
+            "目标": raw_targets,
+            "终点C": config["residual"].get("C"),
+            "终点Mn": config["residual"].get("Mn"),
+            "LP状态": status,
+            "Excel合金消耗kg/t": old_total,
+            "新算法合金消耗kg/t": new_total,
+            "新-Excel消耗kg/t": None if new_total is None else new_total - old_total,
+            "Excel合金成本元/t": old_cost,
+            "新算法合金成本元/t": new_cost,
+            "新-Excel成本元/t": None if new_cost is None else new_cost - old_cost,
+            "Excel铝块kg/t": old_x[[alloy["name"] for alloy in alloys].index("铝块")],
+            "实际铝耗kg/t": aluminum.value,
+            "实际-Excel铝耗kg/t": None if aluminum.value is None else aluminum.value - old_x[[alloy["name"] for alloy in alloys].index("铝块")],
+            "铝耗来源": "" if aluminum.source_row is None else f"{aluminum.source_column}{aluminum.source_row}",
+            "铝耗匹配方式": aluminum.method,
+            "铝耗警告": aluminum.warning,
+            "LP自动合金消耗kg/t(不含铝)": new_auto_total,
+            "LP自动成本元/t(不含铝)": new_auto_cost,
+            "LP目标约束": constraints,
+            "新方案成分校核": chemistry_text(new_chemistry_checks),
+            "原因": explanation,
+            "诊断": "；".join(diagnostics),
+            "old_x": old_x,
+            "new_x": new_x,
+        }
+        rows.append(record)
+
+        if new_x is not None:
+            for index, alloy in enumerate(alloys):
+                delta = new_x[index] - old_x[index]
+                if abs(delta) < 1e-6:
+                    continue
+                details.append(
+                    {
+                        "Excel行号": row,
+                        "炼钢牌号": grade,
+                        "合金": alloy["name"],
+                        "Excel kg/t": old_x[index],
+                        "新算法 kg/t": new_x[index],
+                        "差异 kg/t": delta,
+                        "Excel成本元/t": old_x[index] * float(alloy["price_per_ton"]) / 1000,
+                        "新算法成本元/t": new_x[index] * float(alloy["price_per_ton"]) / 1000,
+                    }
+                )
+
+    ok_rows = [row for row in rows if row["LP状态"] == "ok"]
+    summary = {
+        "total": len(rows),
+        "ok": counters["ok"],
+        "infeasible": counters["infeasible"],
+        "missing_aluminum": counters["missing_aluminum"],
+        "aluminum_duplicate_value_warning": counters["aluminum_duplicate_value_warning"],
+        "recovery_overrides": counters["recovery_overrides"],
+        "old_cost_total": sum(row["Excel合金成本元/t"] or 0 for row in ok_rows),
+        "new_cost_total": sum(row["新算法合金成本元/t"] or 0 for row in ok_rows),
+        "old_kg_total": sum(row["Excel合金消耗kg/t"] or 0 for row in ok_rows),
+        "new_kg_total": sum(row["新算法合金消耗kg/t"] or 0 for row in ok_rows),
+    }
+    summary["cost_delta_total"] = summary["new_cost_total"] - summary["old_cost_total"]
+    summary["kg_delta_total"] = summary["new_kg_total"] - summary["old_kg_total"]
+    return rows, details, {"summary": summary, "alloys": alloys}
+
+
+def result_headers(alloys: list[dict[str, Any]]) -> list[str]:
+    base_headers = [
+        "Excel行号",
+        "序号",
+        "适用牌号",
+        "分类序号",
+        "最小厚度mm",
+        "最大厚度mm",
+        "炼钢牌号",
+        "钢种类型",
+        "液相线温度℃",
+        *[f"{element}目标" for element in TARGET_COLUMNS if element not in IGNORED_TARGET_ELEMENTS],
+        "终点C",
+        "终点Mn",
+        "LP状态",
+        "Excel合金消耗kg/t",
+        "新算法合金消耗kg/t",
+        "新-Excel消耗kg/t",
+        "Excel合金成本元/t",
+        "新算法合金成本元/t",
+        "新-Excel成本元/t",
+        "Excel铝块kg/t",
+        "实际铝耗kg/t",
+        "实际-Excel铝耗kg/t",
+        "铝耗来源",
+        "铝耗匹配方式",
+        "铝耗警告",
+        "LP自动合金消耗kg/t(不含铝)",
+        "LP自动成本元/t(不含铝)",
+        "LP目标约束",
+        "新方案成分校核",
+        "原因",
+        "诊断",
+    ]
+    alloy_headers: list[str] = []
+    for alloy in alloys:
+        name = alloy["name"]
+        alloy_headers.extend([f"Excel_{name}kg/t", f"新算法_{name}kg/t", f"差异_{name}kg/t"])
+    return base_headers + alloy_headers
+
+
+def record_to_row(record: dict[str, Any], headers: list[str], alloys: list[dict[str, Any]]) -> list[Any]:
+    values: dict[str, Any] = {header: record.get(header) for header in headers}
+    for element in TARGET_COLUMNS:
+        if element not in IGNORED_TARGET_ELEMENTS:
+            values[f"{element}目标"] = (record.get("目标") or {}).get(element)
+    for index, alloy in enumerate(alloys):
+        name = alloy["name"]
+        old_x = record.get("old_x") or []
+        new_x = record.get("new_x") or []
+        old_value = old_x[index] if index < len(old_x) else None
+        new_value = new_x[index] if index < len(new_x) else None
+        values[f"Excel_{name}kg/t"] = old_value
+        values[f"新算法_{name}kg/t"] = new_value
+        values[f"差异_{name}kg/t"] = None if new_value is None else new_value - old_value
+    return [values.get(header) for header in headers]
+
+
+def write_workbook(rows: list[dict[str, Any]], details: list[dict[str, Any]], meta: dict[str, Any], output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "LP新算法铝耗对比"
+
+    summary = meta["summary"]
+    alloys = meta["alloys"]
+    headers = result_headers(alloys)
+    last_column = get_column_letter(len(headers))
+
+    sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=min(8, len(headers)))
+    sheet["A1"] = "合金计算.xlsx - LP新算法 + 实际铝耗 对比"
+    sheet["A1"].font = Font(bold=True, size=14, color="FFFFFF")
+    sheet["A1"].fill = PatternFill("solid", fgColor="1F4E78")
+    sheet["A1"].alignment = Alignment(horizontal="center")
+
+    summary_rows = [
+        ("源文件", f"{SOURCE_WORKBOOK.name}!1.合金成本 A5:AU327；{ALUMINUM_WORKBOOK.name}!铝耗 F列炼钢牌号 / AF列实际铝铝耗", "用户口径中写 AP；本文件实际表头在 AF1，AP列为空/未使用。"),
+        ("LP口径", "当前 app.core + process_rules + target_bounds_from_single_value", "铝块 manual_aluminum，不参与LP自动优化；新方案用匹配实耗计入总耗和成本。"),
+        ("行数", summary["total"], f"LP可行 {summary['ok']}；不可行 {summary['infeasible']}；铝耗缺失 {summary['missing_aluminum']}。"),
+        ("成本累计", round(summary["new_cost_total"], 6), f"原Excel {summary['old_cost_total']:.6f}；新-旧 {summary['cost_delta_total']:.6f} 元/t累计。"),
+        ("消耗累计", round(summary["new_kg_total"], 6), f"原Excel {summary['old_kg_total']:.6f}；新-旧 {summary['kg_delta_total']:.6f} kg/t累计。"),
+        ("特殊修正", summary["recovery_overrides"], "现场确认回收率修正，例如 26MNB5 的 Si=0 按 0.8。"),
+        ("生成时间", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "本表由 tools/recalculate_lp_actual_aluminum.py 生成。"),
+    ]
+    for row_index, row_values in enumerate(summary_rows, start=2):
+        label, value, note = row_values
+        sheet.cell(row_index, 1, label)
+        sheet.cell(row_index, 2, value)
+        sheet.cell(row_index, 9, note)
+        sheet.merge_cells(start_row=row_index, start_column=2, end_row=row_index, end_column=8)
+        sheet.merge_cells(start_row=row_index, start_column=9, end_row=row_index, end_column=17)
+        for column_index in (1, 2, 9):
+            cell = sheet.cell(row_index, column_index)
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+        sheet.cell(row_index, 1).font = Font(bold=True)
+
+    header_row = 10
+    group_row = header_row - 1
+    sheet.cell(group_row, 1, "基本信息/目标/旧结果/铝耗/新LP/差异/原因/逐合金明细")
+    sheet.cell(group_row, 1).font = Font(bold=True, color="FFFFFF")
+    sheet.cell(group_row, 1).fill = PatternFill("solid", fgColor="5B9BD5")
+    sheet.merge_cells(start_row=group_row, start_column=1, end_row=group_row, end_column=len(headers))
+
+    for column_index, header in enumerate(headers, start=1):
+        cell = sheet.cell(header_row, column_index, header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="0F172A")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    for offset, record in enumerate(rows, start=1):
+        row_index = header_row + offset
+        for column_index, value in enumerate(record_to_row(record, headers, alloys), start=1):
+            cell = sheet.cell(row_index, column_index, rounded(value) if isinstance(value, float) else value)
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if headers[column_index - 1] == "LP状态" and value != "ok":
+                cell.fill = PatternFill("solid", fgColor="FCA5A5")
+            if headers[column_index - 1].startswith("新-Excel") and isinstance(value, (int, float)):
+                if value < -1e-6:
+                    cell.fill = PatternFill("solid", fgColor="DCFCE7")
+                elif value > 1e-6:
+                    cell.fill = PatternFill("solid", fgColor="FEE2E2")
+
+    sheet.freeze_panes = "J11"
+    sheet.auto_filter.ref = f"A{header_row}:{last_column}{header_row + len(rows)}"
+
+    widths = {
+        "A": 10,
+        "B": 9,
+        "C": 12,
+        "D": 10,
+        "E": 12,
+        "F": 12,
+        "G": 16,
+        "H": 34,
+        "I": 13,
+    }
+    for column_index, header in enumerate(headers, start=1):
+        letter = get_column_letter(column_index)
+        if letter in widths:
+            width = widths[letter]
+        elif header.endswith("目标"):
+            width = 10
+        elif "原因" in header or "约束" in header or "校核" in header or "警告" in header or "诊断" in header:
+            width = 45
+        elif header.startswith(("Excel_", "新算法_", "差异_")):
+            width = 13
+        else:
+            width = 16
+        sheet.column_dimensions[letter].width = width
+
+    for row in sheet.iter_rows(min_row=header_row + 1, max_row=header_row + len(rows)):
+        for cell in row:
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = "0.000000"
+    for row_index in range(2, 9):
+        sheet.row_dimensions[row_index].height = 32
+    sheet.row_dimensions[header_row].height = 42
+
+    workbook.save(output_path)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Recalculate LP comparison with matched actual aluminum usage.")
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Output .xlsx path.")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    rows, details, meta = compute_rows()
+    write_workbook(rows, details, meta, args.output)
+    summary = meta["summary"]
+    print(
+        json.dumps(
+            {
+                "output": str(args.output),
+                "rows": summary["total"],
+                "ok": summary["ok"],
+                "infeasible": summary["infeasible"],
+                "missing_aluminum": summary["missing_aluminum"],
+                "cost_delta_total": round(summary["cost_delta_total"], 6),
+                "kg_delta_total": round(summary["kg_delta_total"], 6),
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()
