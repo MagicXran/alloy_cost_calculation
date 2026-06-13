@@ -26,10 +26,10 @@
 ### 2026-06-13 - LP 回算铝耗列位和 26MnB5 回收率不能按字面硬套
 
 - 问题现象：回算 `合金计算.xlsx` 时，用户口径要求从铝耗文件 `F列炼钢牌号` 和 `AP 实际铝铝耗` 匹配；实际打开 `副本4.铝耗分析(1).xlsx` 后发现 `铝耗` sheet 只使用到 `AF`，`AF1=实际铝铝耗`，`AP` 为空/未使用。首次严格建模时，`26MnB5` 因原表 `Si回收率=0` 被误判为 Si 无法补足。
-- 原因：铝耗 workbook 的实际列位与口头列名不一致；同时当前项目的批量解析已经有现场确认修正规则 `26MNB5` 的 `Si=0` 按 `0.8` 处理，直接从旧 workbook 抽值会绕过这条新算法规则。
-- 修复办法：新增 `tools/recalculate_lp_actual_aluminum.py`，回算时明确读取 `铝耗!F` 和 `铝耗!AF`，在输出表中写明 AP/AF 差异；铝块不进入 LP 自动优化，匹配到的实际铝耗单独计入新方案总耗和成本；构建回收率时复用 `FIELD_CONFIRMED_RECOVERY_OVERRIDES`，使 `26MnB5` 的 Si 回收率按 `0.8` 修正。
-- 验证方式：运行 `.venv-win\Scripts\python.exe tools\recalculate_lp_actual_aluminum.py`，输出 323 行全部 LP 可行、铝耗缺失 0；回读生成 workbook，公式错误扫描 0 条，抽查 Q195-1、Q235B-1、26MnB5、X80M-1 的铝耗来源和原因列。
-- 防复发要求：以后处理现场 Excel 时，不要按用户口头列号直接取数；必须先搜索表头并给出实际 sheet/cell。凡是绕过模板解析直接建模的脚本，都必须显式复用项目已有的现场修正规则。
+- 原因：铝耗 workbook 的实际列位与口头列名不一致；同时当前项目的批量解析已经有现场确认修正规则 `26MNB5` 的 `Si=0` 按 `0.8` 处理，直接从旧 workbook 抽值会绕过这条新算法规则。后续复查又发现 `26MnB5` 原 Excel `AV133/AW133` 本身是 `#DIV/0!`，不能把错误值当 0 去算 `新-Excel` 差值。
+- 修复办法：新增 `tools/recalculate_lp_actual_aluminum.py`，回算时明确读取 `铝耗!F` 和 `铝耗!AF`，在输出表中写明 AP/AF 差异；铝块不进入 LP 自动优化，匹配到的实际铝耗单独计入新方案总耗和成本；构建回收率时复用 `FIELD_CONFIRMED_RECOVERY_OVERRIDES`，使 `26MnB5` 的 Si 回收率按 `0.8` 修正；原 Excel `AV/AW` 为错误值时，输出 `Excel结果状态`，差值留空，并从有效可比汇总中排除。
+- 验证方式：运行 `.venv-win\Scripts\python.exe tools\recalculate_lp_actual_aluminum.py --output outputs\lp_actual_aluminum\合金计算_LP新算法_实际铝耗对比_修正版_20260613.xlsx`，输出 323 行全部 LP 可行、Excel 原结果错误 1、铝耗缺失 0；回读生成 workbook，确认 `26MnB5` 的 `新-Excel成本元/t` 为空且原因列记录 `AV/AW=#DIV/0!`。
+- 防复发要求：以后处理现场 Excel 时，不要按用户口头列号直接取数；必须先搜索表头并给出实际 sheet/cell。凡是绕过模板解析直接建模的脚本，都必须显式复用项目已有的现场修正规则；原 Excel 缓存值为错误时必须标注不可比，不能静默转成 0。
 
 ### 2026-06-13 - LP 工艺规则固定值先硬编码，后补页面可调接口
 

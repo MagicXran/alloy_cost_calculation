@@ -41,7 +41,7 @@ from app.solvers import get_solver
 
 SOURCE_WORKBOOK = ROOT / "合金计算.xlsx"
 ALUMINUM_WORKBOOK = ROOT / "副本4.铝耗分析(1).xlsx"
-DEFAULT_OUTPUT = ROOT / "outputs" / "lp_actual_aluminum" / "合金计算_LP新算法_实际铝耗对比_20260613.xlsx"
+DEFAULT_OUTPUT = ROOT / "outputs" / "lp_actual_aluminum" / "合金计算_LP新算法_实际铝耗对比_修正版_20260613.xlsx"
 
 TARGET_COLUMNS = {
     "C": "I",
@@ -350,15 +350,32 @@ def chemistry_text(checks: list[dict[str, Any]]) -> str:
     return "; ".join(shown)
 
 
-def top_alloy_changes(alloys: list[dict[str, Any]], old_x: list[float], new_x: list[float], limit: int = 5) -> list[str]:
+def top_alloy_changes(
+    alloys: list[dict[str, Any]],
+    old_x: list[float | None],
+    new_x: list[float],
+    limit: int = 5,
+) -> list[str]:
     changes = []
     for index, alloy in enumerate(alloys):
-        delta = new_x[index] - old_x[index]
+        old_value = old_x[index]
+        if old_value is None:
+            if abs(new_x[index]) < 1e-6:
+                continue
+            changes.append((abs(new_x[index]), alloy["name"], None, new_x[index], None))
+            continue
+        delta = new_x[index] - old_value
         if abs(delta) < 1e-6:
             continue
-        changes.append((abs(delta), alloy["name"], old_x[index], new_x[index], delta))
+        changes.append((abs(delta), alloy["name"], old_value, new_x[index], delta))
     changes.sort(reverse=True)
-    return [f"{name}:{old:.3f}->{new:.3f}({format_delta(delta)})" for _, name, old, new, delta in changes[:limit]]
+    formatted = []
+    for _, name, old, new, delta in changes[:limit]:
+        if old is None:
+            formatted.append(f"{name}:Excel错误->{new:.3f}")
+        else:
+            formatted.append(f"{name}:{old:.3f}->{new:.3f}({format_delta(delta)})")
+    return formatted
 
 
 def explain_row(
@@ -366,10 +383,12 @@ def explain_row(
     grade: str,
     config: dict[str, Any],
     alloys: list[dict[str, Any]],
-    old_x: list[float],
+    old_x: list[float | None],
     new_x: list[float] | None,
     old_chemistry: dict[str, float] | None,
-    old_cost: float,
+    old_cost: float | None,
+    old_cost_raw: Any,
+    old_total_raw: Any,
     new_cost: float | None,
     aluminum: AluminumMatch,
     recovery_overrides: list[str],
@@ -381,6 +400,7 @@ def explain_row(
     assert new_x is not None
     reasons: list[str] = []
     old_al = old_x[[alloy["name"] for alloy in alloys].index("铝块")]
+    old_al = 0.0 if old_al is None else old_al
     actual_al = aluminum.value or 0.0
     if abs(actual_al - old_al) > 1e-6:
         reasons.append(
@@ -409,7 +429,9 @@ def explain_row(
     if changes:
         reasons.append("主要投料变化：" + "；".join(changes))
 
-    if new_cost is not None:
+    if old_cost is None:
+        reasons.append(f"原Excel AV/AW结果无效：AV={old_total_raw}，AW={old_cost_raw}，本行新旧成本差不可比")
+    elif new_cost is not None:
         delta = new_cost - old_cost
         direction = "下降" if delta < -1e-6 else "上升" if delta > 1e-6 else "基本持平"
         reasons.append(f"成本{direction}：新-旧={format_delta(delta)}元/t")
@@ -439,10 +461,15 @@ def compute_rows() -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str
         grade = str(grade_cell).strip()
         aluminum = match_aluminum(row, grade, first_aluminum, aluminum_by_row, aluminum_duplicates)
         config, raw_targets, recovery_overrides = build_row_config(cost_sheet, param_sheet, row, grade, alloys, process_rules)
-        old_x = [optional_float(cost_sheet[f"{alloy['source_column']}{row}"].value) or 0.0 for alloy in alloys]
-        old_cost = optional_float(cost_sheet[f"AW{row}"].value) or 0.0
-        old_total = optional_float(cost_sheet[f"AV{row}"].value) or 0.0
-        old_chemistry = chemistry_from_vector(config, alloys, old_x)
+        old_raw_x = [cost_sheet[f"{alloy['source_column']}{row}"].value for alloy in alloys]
+        old_x = [optional_float(value) for value in old_raw_x]
+        old_x_for_chemistry = [value if value is not None else 0.0 for value in old_x]
+        old_cost_raw = cost_sheet[f"AW{row}"].value
+        old_total_raw = cost_sheet[f"AV{row}"].value
+        old_cost = optional_float(old_cost_raw)
+        old_total = optional_float(old_total_raw)
+        excel_result_status = "ok" if old_cost is not None and old_total is not None else f"Excel原表错误: AV={old_total_raw}, AW={old_cost_raw}"
+        old_chemistry = chemistry_from_vector(config, alloys, old_x_for_chemistry)
         constraints = constraint_text(config)
 
         diagnostics: list[str] = []
@@ -491,6 +518,8 @@ def compute_rows() -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str
             new_x,
             old_chemistry,
             old_cost,
+            old_cost_raw,
+            old_total_raw,
             new_cost,
             aluminum,
             recovery_overrides,
@@ -511,12 +540,15 @@ def compute_rows() -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str
             "终点C": config["residual"].get("C"),
             "终点Mn": config["residual"].get("Mn"),
             "LP状态": status,
+            "Excel结果状态": excel_result_status,
             "Excel合金消耗kg/t": old_total,
             "新算法合金消耗kg/t": new_total,
-            "新-Excel消耗kg/t": None if new_total is None else new_total - old_total,
+            "新-Excel消耗kg/t": None if new_total is None or old_total is None else new_total - old_total,
+            "Excel合金消耗原值": old_total_raw,
             "Excel合金成本元/t": old_cost,
             "新算法合金成本元/t": new_cost,
-            "新-Excel成本元/t": None if new_cost is None else new_cost - old_cost,
+            "新-Excel成本元/t": None if new_cost is None or old_cost is None else new_cost - old_cost,
+            "Excel合金成本原值": old_cost_raw,
             "Excel铝块kg/t": old_x[[alloy["name"] for alloy in alloys].index("铝块")],
             "实际铝耗kg/t": aluminum.value,
             "实际-Excel铝耗kg/t": None if aluminum.value is None else aluminum.value - old_x[[alloy["name"] for alloy in alloys].index("铝块")],
@@ -530,33 +562,38 @@ def compute_rows() -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str
             "原因": explanation,
             "诊断": "；".join(diagnostics),
             "old_x": old_x,
+            "old_raw_x": old_raw_x,
             "new_x": new_x,
         }
         rows.append(record)
 
         if new_x is not None:
             for index, alloy in enumerate(alloys):
-                delta = new_x[index] - old_x[index]
-                if abs(delta) < 1e-6:
+                old_value = old_x[index]
+                delta = None if old_value is None else new_x[index] - old_value
+                if old_value is None and abs(new_x[index]) < 1e-6:
+                    continue
+                if delta is not None and abs(delta) < 1e-6:
                     continue
                 details.append(
                     {
                         "Excel行号": row,
                         "炼钢牌号": grade,
                         "合金": alloy["name"],
-                        "Excel kg/t": old_x[index],
+                        "Excel kg/t": old_value,
                         "新算法 kg/t": new_x[index],
                         "差异 kg/t": delta,
-                        "Excel成本元/t": old_x[index] * float(alloy["price_per_ton"]) / 1000,
+                        "Excel成本元/t": None if old_value is None else old_value * float(alloy["price_per_ton"]) / 1000,
                         "新算法成本元/t": new_x[index] * float(alloy["price_per_ton"]) / 1000,
                     }
                 )
 
-    ok_rows = [row for row in rows if row["LP状态"] == "ok"]
+    ok_rows = [row for row in rows if row["LP状态"] == "ok" and row["Excel结果状态"] == "ok"]
     summary = {
         "total": len(rows),
         "ok": counters["ok"],
         "infeasible": counters["infeasible"],
+        "excel_result_errors": sum(1 for row in rows if row["Excel结果状态"] != "ok"),
         "missing_aluminum": counters["missing_aluminum"],
         "aluminum_duplicate_value_warning": counters["aluminum_duplicate_value_warning"],
         "recovery_overrides": counters["recovery_overrides"],
@@ -585,10 +622,13 @@ def result_headers(alloys: list[dict[str, Any]]) -> list[str]:
         "终点C",
         "终点Mn",
         "LP状态",
+        "Excel结果状态",
         "Excel合金消耗kg/t",
+        "Excel合金消耗原值",
         "新算法合金消耗kg/t",
         "新-Excel消耗kg/t",
         "Excel合金成本元/t",
+        "Excel合金成本原值",
         "新算法合金成本元/t",
         "新-Excel成本元/t",
         "Excel铝块kg/t",
@@ -624,7 +664,7 @@ def record_to_row(record: dict[str, Any], headers: list[str], alloys: list[dict[
         new_value = new_x[index] if index < len(new_x) else None
         values[f"Excel_{name}kg/t"] = old_value
         values[f"新算法_{name}kg/t"] = new_value
-        values[f"差异_{name}kg/t"] = None if new_value is None else new_value - old_value
+        values[f"差异_{name}kg/t"] = None if new_value is None or old_value is None else new_value - old_value
     return [values.get(header) for header in headers]
 
 
@@ -648,9 +688,21 @@ def write_workbook(rows: list[dict[str, Any]], details: list[dict[str, Any]], me
     summary_rows = [
         ("源文件", f"{SOURCE_WORKBOOK.name}!1.合金成本 A5:AU327；{ALUMINUM_WORKBOOK.name}!铝耗 F列炼钢牌号 / AF列实际铝铝耗", "用户口径中写 AP；本文件实际表头在 AF1，AP列为空/未使用。"),
         ("LP口径", "当前 app.core + process_rules + target_bounds_from_single_value", "铝块 manual_aluminum，不参与LP自动优化；新方案用匹配实耗计入总耗和成本。"),
-        ("行数", summary["total"], f"LP可行 {summary['ok']}；不可行 {summary['infeasible']}；铝耗缺失 {summary['missing_aluminum']}。"),
-        ("成本累计", round(summary["new_cost_total"], 6), f"原Excel {summary['old_cost_total']:.6f}；新-旧 {summary['cost_delta_total']:.6f} 元/t累计。"),
-        ("消耗累计", round(summary["new_kg_total"], 6), f"原Excel {summary['old_kg_total']:.6f}；新-旧 {summary['kg_delta_total']:.6f} kg/t累计。"),
+        (
+            "行数",
+            summary["total"],
+            f"LP可行 {summary['ok']}；不可行 {summary['infeasible']}；Excel原结果错误 {summary['excel_result_errors']}；铝耗缺失 {summary['missing_aluminum']}。",
+        ),
+        (
+            "成本累计",
+            round(summary["new_cost_total"], 6),
+            f"仅统计Excel原结果有效行：原Excel {summary['old_cost_total']:.6f}；新-旧 {summary['cost_delta_total']:.6f} 元/t累计。",
+        ),
+        (
+            "消耗累计",
+            round(summary["new_kg_total"], 6),
+            f"仅统计Excel原结果有效行：原Excel {summary['old_kg_total']:.6f}；新-旧 {summary['kg_delta_total']:.6f} kg/t累计。",
+        ),
         ("特殊修正", summary["recovery_overrides"], "现场确认回收率修正，例如 26MNB5 的 Si=0 按 0.8。"),
         ("生成时间", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "本表由 tools/recalculate_lp_actual_aluminum.py 生成。"),
     ]
@@ -749,6 +801,7 @@ def main() -> None:
                 "rows": summary["total"],
                 "ok": summary["ok"],
                 "infeasible": summary["infeasible"],
+                "excel_result_errors": summary["excel_result_errors"],
                 "missing_aluminum": summary["missing_aluminum"],
                 "cost_delta_total": round(summary["cost_delta_total"], 6),
                 "kg_delta_total": round(summary["kg_delta_total"], 6),
