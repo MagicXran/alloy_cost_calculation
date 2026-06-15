@@ -142,7 +142,7 @@ def test_parse_template_workbook_builds_prevalidated_payload():
     assert report["parsed"]["tasks"][0]["config"]["residual"]["Si"] == 0
 
 
-def test_single_target_values_follow_clean_rule_bounds_without_hidden_margins():
+def test_single_target_values_follow_confirmed_exact_target_semantics_without_hidden_margins():
     report = parse_template_workbook(
         workbook_bytes(
             target_header=[
@@ -181,26 +181,27 @@ def test_single_target_values_follow_clean_rule_bounds_without_hidden_margins():
 
     assert q235b_target["C"] == {"max": 0.16}
     assert q235b_target["Si"] == {"max": 0.05}
-    assert q235b_target["Mn"] == {"min": 0.20}
+    assert q235b_target["Mn"] == {"min": 0.20, "max": 0.20}
     assert q235b_target["P"] == {"max": 0.025}
     assert q235b_target["S"] == {"max": 0.020}
-    assert q235b_target["Als"] == {"min": 0.010}
+    assert q235b_target["Als"] == {"min": 0.010, "max": 0.010}
     assert "Ca" not in q235b_target
-    assert q355c_target["Si"] == {"min": 0.10}
-    assert q355c_target["V"] == {"min": 0.030}
-    assert q355c_target["Nb"] == {"min": 0.020}
-    assert q355c_target["Ti"] == {"min": 0.025}
+    assert q355c_target["Si"] == {"min": 0.10, "max": 0.10}
+    assert q355c_target["Mn"] == {"min": 0.90, "max": 0.90}
+    assert q355c_target["V"] == {"min": 0.030, "max": 0.030}
+    assert q355c_target["Nb"] == {"min": 0.020, "max": 0.020}
+    assert q355c_target["Ti"] == {"min": 0.025, "max": 0.025}
     ti_bounds = effective_bounds(report["parsed"]["tasks"][1]["config"], "Ti")
-    assert ti_bounds["min"] == pytest.approx(0.030)
-    assert ti_bounds["max"] is None
-    assert q355c_target["Alt"] == {"min": 0.030}
+    assert ti_bounds["min"] == pytest.approx(0.025)
+    assert ti_bounds["max"] == pytest.approx(0.025)
+    assert q355c_target["Alt"] == {"min": 0.030, "max": 0.030}
     assert "Ca" not in q355c_target
-    assert q355c_target["Cr"] == {"min": 0.20}
-    assert q355c_target["Ni"] == {"min": 0.10}
-    assert q355c_target["Cu"] == {"min": 0.10}
-    assert q355c_target["Mo"] == {"min": 0.05}
-    assert q355c_target["B"] == {"min": 0.002}
-    assert q355c_target["Sb"] == {"min": 0.03}
+    assert q355c_target["Cr"] == {"min": 0.20, "max": 0.20}
+    assert q355c_target["Ni"] == {"min": 0.10, "max": 0.10}
+    assert q355c_target["Cu"] == {"min": 0.10, "max": 0.10}
+    assert q355c_target["Mo"] == {"min": 0.05, "max": 0.05}
+    assert q355c_target["B"] == {"min": 0.002, "max": 0.002}
+    assert q355c_target["Sb"] == {"min": 0.03, "max": 0.03}
 
 
 def test_rule_sheet_overrides_batch_process_rules():
@@ -634,6 +635,7 @@ def test_download_template_uses_requested_element_scope():
     assert "N" not in alloy_headers
     assert "C/P/S 按上限控制" in rules_text
     assert "Si<=0.05 时只做低杂质控制、按上限处理" in rules_text
+    assert "其余元素单值目标按等值控制" in rules_text
     assert "Ti 只在下限侧加一次该余量" not in rules_text
     assert "C目标-余量" in rules_text
     assert "铝块按现场单独录入" in rules_text

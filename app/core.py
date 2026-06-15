@@ -107,7 +107,7 @@ def apply_process_rules_to_bounds(config: dict[str, Any], element: str, bounds: 
     if element == "C" and target is not None and adjusted["max"] is not None:
         adjusted["max"] = min(adjusted["max"], target - float(rules["carbon_target_margin"]))
 
-    if element == "Ti" and target is not None:
+    if element == "Ti" and target is not None and not is_exact_bound(adjusted):
         addition = float(rules["ti_safety_addition"])
         if adjusted["min"] is not None:
             adjusted["min"] += addition
@@ -120,6 +120,12 @@ def apply_process_rules_to_bounds(config: dict[str, Any], element: str, bounds: 
         return {"min": None, "max": None}
 
     return adjusted
+
+
+def is_exact_bound(bounds: dict[str, float | None]) -> bool:
+    """单值目标已被解析成等值时，不再叠加工艺安全余量。"""
+
+    return bounds["min"] is not None and bounds["max"] is not None and abs(bounds["min"] - bounds["max"]) <= EPS
 
 
 def control_target_for(config: dict[str, Any], element: str) -> float | None:
