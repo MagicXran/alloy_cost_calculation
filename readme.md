@@ -6,7 +6,7 @@
 
 当前重点目标：
 
-- 保留 `合金计算.xlsx` 作为旧规则取证和结果对比来源。
+- 保留 `热卷成本效益测算20260613版（基础参数表）---发徐老师(3).xlsx` 作为当前正确版旧规则取证和结果对比来源。
 - 用后端 LP/MILP 算法替代旧 Excel 的逐列启发式公式。
 - 把现场确认的新 LP 工艺规则集中到 `process_rules`，并支持页面配置。
 - 批量 Excel 模板可预检、批量计算、导出结果。
@@ -43,7 +43,7 @@ flowchart LR
     API --> Batch["app.batch_template 批量模板"]
     Core --> Solver["app.solvers HiGHS / internal"]
     Config["config.json"] --> API
-    Excel["合金计算.xlsx / 批量模板"] --> Batch
+    Excel["热卷成本效益测算20260613版 / 批量模板"] --> Batch
     Batch --> Core
     Core --> Result["单炉结果 / 批量导出 / 对比报表"]
 ```
@@ -86,7 +86,7 @@ flowchart TD
 - Ni/Cu/Mo/Sb/B 低目标时不投对应纯合金。
 - P/S 低目标时不投磷铁/硫铁。
 
-### 合金计算 workbook 回算
+### 正确版 workbook 回算
 
 脚本：
 
@@ -94,18 +94,24 @@ flowchart TD
 .venv-win\Scripts\python.exe tools\recalculate_lp_actual_aluminum.py
 ```
 
+也可以显式指定同结构源文件：
+
+```powershell
+.venv-win\Scripts\python.exe tools\recalculate_lp_actual_aluminum.py --source "热卷成本效益测算20260613版（基础参数表）---发徐老师(3).xlsx"
+```
+
 输出：
 
 ```text
-outputs/lp_actual_aluminum/合金计算_LP新算法_实际铝耗对比_修正版_20260613.xlsx
+outputs/lp_actual_aluminum/热卷成本效益测算20260613版_LP新算法_单源对比_20260615.xlsx
 ```
 
-该脚本读取 `合金计算.xlsx` 的目标、终点、旧 Excel 投料和成本；读取 `副本4.铝耗分析(1).xlsx` 的 `铝耗!F` 炼钢牌号与 `铝耗!AF` 实际铝铝耗；按当前 LP 新算法重新计算非铝合金，再把实际铝耗单独计入新方案总耗和成本。若原 Excel 的 `AV/AW` 为 `#DIV/0!` 等错误值，该行只展示新 LP 结果和原因，不计算 `新-Excel` 差值，也不纳入有效可比汇总。
+该脚本只读取 `热卷成本效益测算20260613版（基础参数表）---发徐老师(3).xlsx` 一个文件：`1.合金成本` 提供目标成分、旧 Excel 投料、`AB4:AT4` 合金不含税单价、`AH` 铝块用量、`AV/AW` 原合金消耗和成本；`炼钢参数表` 提供终点 C/Mn 与各元素回收率。铝块仍按 `process_rules.manual_aluminum` 单独维护，不参与 LP 自动优化；新方案固定使用同源 `1.合金成本!AH` 的铝块值计入总耗和成本。输出表会复算源表 `AV=SUM(AB:AU)`、`AW=SUMPRODUCT(AB4:AU4, AB:AU)/1000`，并对负投料、行级牌号不一致等源表风险给出审计提示。
 
 ## 约束与注意事项
 
 - Excel 旧表是“顺序启发式 + 经验阈值 + 缓存结果”，不是纯 LP。
 - 对比 LP 时必须拆到合金投料、元素边界、回收率、铝耗口径和禁用规则，不能只看总成本。
-- 铝耗用户口径里可能写成 `AP`，但当前 `副本4.铝耗分析(1).xlsx` 的实际表头在 `铝耗!AF1`，`AP` 不在使用范围内。
+- 当前正确版 workbook 已把铝耗和合金单价统一维护在 `1.合金成本` 内；回算脚本不得再读取外部铝耗表或外部价格表。
 - `26MnB5` 的 Si 回收率若在原表为 0，按现场确认规则修正为 0.8。
 - 修改算法、模板、页面或生成脚本后，必须同步更新本文档和 `issue_log.md`。

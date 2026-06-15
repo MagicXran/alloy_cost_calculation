@@ -6,7 +6,7 @@
 
 - 后端：FastAPI + Pydantic + SciPy/HiGHS LP/MILP 求解。
 - 前端：`prototype.html` + `ui.js` 静态页面，从后端 `/api/config` 读取 `config.json`。
-- Excel：`合金计算.xlsx` 是旧规则取证来源；`alloy-batch-template-v1.xlsx` 是批量上传模板；`outputs/` 存放生成的分析/导出结果。
+- Excel：`热卷成本效益测算20260613版（基础参数表）---发徐老师(3).xlsx` 是当前正确版旧规则取证来源，铝耗和合金单价都维护在此单一 workbook 内；`alloy-batch-template-v1.xlsx` 是批量上传模板；`outputs/` 存放生成的分析/导出结果。
 
 ## 重要文件
 
@@ -16,7 +16,7 @@
 - `config.json`：默认合金、目标、回收率、安全余量、现场工艺规则。
 - `prototype.html`、`ui.js`：单炉计算页面。
 - `tests/`：后端、模板、前端静态契约测试。
-- `tools/recalculate_lp_actual_aluminum.py`：按当前 LP 新算法回算 `合金计算.xlsx` 并匹配实际铝耗的审计脚本。
+- `tools/recalculate_lp_actual_aluminum.py`：按当前 LP 新算法回算正确版单源 workbook；目标/终点/回收率/合金单价/铝块用量均来自 `热卷成本效益测算20260613版（基础参数表）---发徐老师(3).xlsx`。
 - `readme.md`：面向新用户的项目说明，代码或逻辑变动时必须同步更新。
 - `issue_log.md`：逻辑变更、历史错误、修复办法和防复发规则，修 bug 或改逻辑时必须同步更新。
 
@@ -56,7 +56,7 @@ http://127.0.0.1:8017/prototype.html
 - 控元素和现场确认规则集中在 `app/core.py` 的 `effective_bounds()`、`process_rules()`、`process_rule_alloy_upper_bound()`。
 - 批量模板单值目标转换在 `app/batch_template.py`，但 LP 工艺修正必须在核心边界层统一生效。
 - 铝块当前按 `process_rules.manual_aluminum` 单独维护，不参与 LP 自动优化；涉及实际铝耗对比时必须从铝耗来源表取值再单独计入成本和消耗。
-- 做 workbook 规则审计时，先读真实 Excel 的 sheet/cell/formula/cache 值，再改代码或生成结论。
+- 做 workbook 规则审计时，先读真实 Excel 的 sheet/cell/formula/cache 值，再改代码或生成结论；当前正确版回算不得再默认读取外部铝耗表或外部价格表。
 - `mem/` 是本地记忆目录，默认忽略，不作为项目交付内容。
 
 ## 生成文件
