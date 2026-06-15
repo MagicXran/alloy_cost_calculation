@@ -257,7 +257,7 @@ def build_row_config(
         raw_targets[element] = value
         if value is None:
             continue
-        bounds = target_bounds_from_single_value(element, value)
+        bounds = target_bounds_from_single_value(element, value, process_rules)
         if bounds:
             target[element] = bounds
 

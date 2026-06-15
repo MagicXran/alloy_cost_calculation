@@ -180,7 +180,7 @@ def test_single_target_values_follow_clean_rule_bounds_without_hidden_margins():
     q355c_target = report["parsed"]["tasks"][1]["config"]["target"]
 
     assert q235b_target["C"] == {"max": 0.16}
-    assert q235b_target["Si"] == {"min": 0.05}
+    assert q235b_target["Si"] == {"max": 0.05}
     assert q235b_target["Mn"] == {"min": 0.20}
     assert q235b_target["P"] == {"max": 0.025}
     assert q235b_target["S"] == {"max": 0.020}
@@ -223,6 +223,7 @@ def test_rule_sheet_overrides_batch_process_rules():
     assert rules["enabled"] is True
     assert rules["carbon_target_margin"] == pytest.approx(0.004)
     assert rules["disable_silicon_alloys_si_max"] == pytest.approx(0.03)
+    assert rules["single_target_si_upper_only_max"] == pytest.approx(0.05)
     assert rules["manual_aluminum"] is False
     assert rules["ti_safety_addition"] == pytest.approx(0.006)
     assert rules["trace_alloy_thresholds"]["Ni"] == pytest.approx(0.018)
@@ -632,7 +633,7 @@ def test_download_template_uses_requested_element_scope():
     assert "N回收率" not in endpoint_headers
     assert "N" not in alloy_headers
     assert "C/P/S 按上限控制" in rules_text
-    assert "其余元素单值目标按下限控制" in rules_text
+    assert "Si<=0.05 时只做低杂质控制、按上限处理" in rules_text
     assert "Ti 只在下限侧加一次该余量" not in rules_text
     assert "C目标-余量" in rules_text
     assert "铝块按现场单独录入" in rules_text
@@ -642,7 +643,8 @@ def test_download_template_uses_requested_element_scope():
     rule_headers = [cell.value for cell in rule_sheet[1]]
     assert rule_headers == ["规则项", "参数键", "值", "说明"]
     assert rule_sheet["B2"].value == "enabled"
-    assert rule_sheet["B6"].value == "ti_safety_addition"
+    assert rule_sheet["B5"].value == "single_target_si_upper_only_max"
+    assert rule_sheet["B7"].value == "ti_safety_addition"
 
 
 def test_checked_in_template_matches_generated_template_values():

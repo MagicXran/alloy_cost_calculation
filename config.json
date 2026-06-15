@@ -124,6 +124,7 @@
     "enabled": true,
     "carbon_target_margin": 0.005,
     "disable_silicon_alloys_si_max": 0.04,
+    "single_target_si_upper_only_max": 0.05,
     "manual_aluminum": true,
     "ti_safety_addition": 0.005,
     "trace_alloy_thresholds": {

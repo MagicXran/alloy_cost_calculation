@@ -45,6 +45,7 @@ RULES_TEMPLATE_ROWS = [
     ("规则总开关", "enabled", True, "是否启用现场确认的 8 条工艺规则；是/否。"),
     ("控碳余量", "carbon_target_margin", 0.005, "C 上限按 目标值-该余量 控制。"),
     ("禁硅阈值", "disable_silicon_alloys_si_max", 0.04, "Si 目标 <= 该阈值时禁用硅锰/硅铁。"),
+    ("低硅上限语义阈值", "single_target_si_upper_only_max", 0.05, "Si 目标 <= 该阈值时只做低杂质控制，不要求补到目标值。"),
     ("铝块单独录入", "manual_aluminum", True, "铝块不参与 LP 自动优化，由现场单独录入。"),
     ("Ti 安全余量", "ti_safety_addition", 0.005, "Ti 只在下限侧加一次该余量。"),
     ("Ni 禁投阈值", "trace_alloy_thresholds.Ni", 0.02, "Ni 目标 <= 该阈值时不投镍板。"),
@@ -158,7 +159,7 @@ def generate_template_workbook(process_rules: dict | None = None) -> bytes:
             ["模板版本", TEMPLATE_VERSION],
             ["填写流程", "下载模板 -> 填业务数据 -> 上传预检 -> 预检通过后批量计算 -> 导出结果"],
             ["单位规则", "成分按百分数数值填写，例如 0.23 表示 0.23%；合金品位 65.66 表示 65.66%。"],
-            ["外部单值规则", "目标成分表使用 元素目标 单值列：C/P/S 按上限控制；Ni/Cu/Mo/Sb<=0.02、B<=0.0002 时可留空或直接视为不投；其余元素单值目标按下限控制。旧的 元素下限/元素上限 上传列仍兼容。"],
+            ["外部单值规则", "目标成分表使用 元素目标 单值列：C/P/S 按上限控制；Si<=0.05 时只做低杂质控制、按上限处理；Ni/Cu/Mo/Sb<=0.02、B<=0.0002 时可留空或直接视为不投；其余元素单值目标按下限控制。旧的 元素下限/元素上限 上传列仍兼容。"],
             ["现场工艺规则", "以 07_工艺规则参数 sheet 为准：当前批准规则只有 C目标-余量、Si<=阈值禁硅、金属锰兜底、铝块按现场单独录入、Ti 下限+余量、Ni/Cu/Mo/Sb/B 低目标禁投、P/S 低目标禁投磷硫铁。"],
             ["合金用量公式", "kg/t = (目标成分 - 有效终点成分) / 合金品位 / 回收率 * 1000；当前批量链路只使用 C/Mn 终点扣减，V/Nb/Ti/Cr 等不做终点残余扣减；26MnB5 的 Si 回收率若录成 0 会按现场确认值 0.8 修正。"],
             ["标准元素", "标准模板仅保留 C, Si, Mn, P, S, V, Nb, Ti, Als, Alt, Ca, Cr, Ni, Cu, Mo, B, Sb；旧模板里的 N 上传时会被忽略。"],
@@ -358,7 +359,7 @@ def build_parsed_template(rows_by_sheet: dict[str, list[dict]], errors: list[dic
     """把各 sheet 原始行转换成批量求解输入。"""
 
     process_rules = parse_process_rules_rows(rows_by_sheet.get(RULES_SHEET) or [], errors)
-    target_rows = parse_target_rows(rows_by_sheet["02_目标成分上下限"], errors)
+    target_rows = parse_target_rows(rows_by_sheet["02_目标成分上下限"], errors, process_rules)
     endpoint_rows = parse_endpoint_rows(rows_by_sheet["03_转炉终点与回收率"], errors)
     validate_unique_steelmaking_grade(target_rows, "02_目标成分上下限", errors)
     validate_unique_steelmaking_grade(endpoint_rows, "03_转炉终点与回收率", errors)
@@ -644,7 +645,7 @@ def parse_task_rows(rows: list[dict], errors: list[dict]) -> list[dict]:
     return tasks
 
 
-def parse_target_rows(rows: list[dict], errors: list[dict]) -> list[dict]:
+def parse_target_rows(rows: list[dict], errors: list[dict], process_rules: dict | None = None) -> list[dict]:
     targets = []
     for row in rows:
         target: dict[str, dict] = {}
@@ -659,7 +660,7 @@ def parse_target_rows(rows: list[dict], errors: list[dict]) -> list[dict]:
             number = optional_number(value, "02_目标成分上下限", row["_row"], header, errors, minimum=0, maximum=10)
             if number is None:
                 continue
-            bounds = target_bounds_from_single_value(element, number)
+            bounds = target_bounds_from_single_value(element, number, process_rules)
             if bounds:
                 target[element] = bounds
             single_target_elements.add(element)
@@ -716,7 +717,7 @@ def validate_unique_steelmaking_grade(records: list[dict], sheet: str, errors: l
         seen[steelmaking_grade] = record.get("row")
 
 
-def target_bounds_from_single_value(element: str, value: float) -> dict[str, float]:
+def target_bounds_from_single_value(element: str, value: float, process_rules: dict | None = None) -> dict[str, float]:
     """把外部单值目标转换成优化器需要的上下限。"""
 
     target = normalized_float(value)
@@ -725,13 +726,16 @@ def target_bounds_from_single_value(element: str, value: float) -> dict[str, flo
         return {}
     if element in SINGLE_TARGET_UPPER_ONLY_ELEMENTS:
         return {"max": target}
+    si_upper_only_max = float((process_rules or {}).get("single_target_si_upper_only_max") or default_process_rules()["single_target_si_upper_only_max"])
+    if element == "Si" and target <= si_upper_only_max:
+        return {"max": target}
     return {"min": target}
 
 
-def single_target_values_to_bounds(values_by_element: dict[str, float]) -> dict[str, dict[str, float]]:
+def single_target_values_to_bounds(values_by_element: dict[str, float], process_rules: dict | None = None) -> dict[str, dict[str, float]]:
     """批量转换外部单值目标，供模板样例和兼容解析复用。"""
 
-    return {element: target_bounds_from_single_value(element, value) for element, value in values_by_element.items() if element not in TARGET_IGNORED_ELEMENTS}
+    return {element: target_bounds_from_single_value(element, value, process_rules) for element, value in values_by_element.items() if element not in TARGET_IGNORED_ELEMENTS}
 
 
 def normalized_float(value: float) -> float:

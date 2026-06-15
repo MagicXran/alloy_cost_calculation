@@ -21,6 +21,7 @@ DEFAULT_PROCESS_RULES = {
     "enabled": True,
     "carbon_target_margin": 0.005,
     "disable_silicon_alloys_si_max": 0.04,
+    "single_target_si_upper_only_max": 0.05,
     "manual_aluminum": True,
     "ti_safety_addition": 0.005,
     "trace_alloy_thresholds": {"Ni": 0.02, "Cu": 0.02, "Mo": 0.02, "Sb": 0.02, "B": 0.0002},
