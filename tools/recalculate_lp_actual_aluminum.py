@@ -35,6 +35,7 @@ from app.core import (
     cost_for,
     diagnose_infeasible,
     effective_bounds,
+    evaluate_plan_against_rules,
 )
 from app.solvers import get_solver
 
@@ -326,6 +327,45 @@ def chemistry_text(checks: list[dict[str, Any]]) -> str:
     return "; ".join(shown)
 
 
+def evaluate_excel_plan(
+    config: dict[str, Any],
+    alloys: list[dict[str, Any]],
+    old_x: list[float | None],
+    old_raw_x: list[Any],
+) -> dict[str, Any]:
+    """判断旧 Excel 投料在当前批准规则下是否可行。"""
+
+    input_issues: list[str] = []
+    normalized_x: list[float] = []
+    for index, alloy in enumerate(alloys):
+        raw = old_raw_x[index]
+        value = old_x[index]
+        if value is None:
+            if raw not in (None, ""):
+                input_issues.append(f"{alloy['name']} 原表投料非数字：{raw}")
+            normalized_x.append(0.0)
+            continue
+        if value < -1e-8:
+            input_issues.append(f"{alloy['name']} 原表投料为负：{value:.6g} kg/t")
+        normalized_x.append(value)
+
+    evaluation = evaluate_plan_against_rules(config, alloys, normalized_x, ignore_manual_aluminum=True)
+    issues = [*input_issues, *evaluation["issues"]]
+    if input_issues:
+        status = "输入异常"
+    elif evaluation["ok"]:
+        status = "是"
+    else:
+        status = "否"
+    return {
+        "status": status,
+        "checks": evaluation["checks"],
+        "chemistry": evaluation["chemistry"],
+        "issues": issues,
+        "x": normalized_x,
+    }
+
+
 def top_alloy_changes(
     alloys: list[dict[str, Any]],
     old_x: list[float | None],
@@ -397,6 +437,8 @@ def explain_row(
     old_x: list[float | None],
     new_x: list[float] | None,
     old_chemistry: dict[str, float] | None,
+    excel_rule_status: str,
+    excel_rule_issues: list[str],
     old_cost: float | None,
     old_cost_raw: Any,
     old_total_raw: Any,
@@ -423,6 +465,10 @@ def explain_row(
 
     if audit_notes:
         reasons.append("源表审计提示：" + "；".join(audit_notes[:3]))
+
+    if excel_rule_status != "是":
+        prefix = "原Excel在批准规则下输入异常：" if excel_rule_status == "输入异常" else "原Excel在批准规则下不可行："
+        reasons.append(prefix + "；".join(excel_rule_issues[:3]))
 
     if recovery_overrides:
         reasons.append(f"现场确认回收率修正：{grade} " + "、".join(recovery_overrides))
@@ -486,6 +532,7 @@ def compute_rows(source_workbook_path: Path = SOURCE_WORKBOOK) -> tuple[list[dic
         excel_result_status = "ok" if old_cost is not None and old_total is not None else f"Excel原表错误: AV={old_total_raw}, AW={old_cost_raw}"
         audit_notes = source_audit_notes(cost_sheet, param_sheet, row, alloys, old_x, old_total, old_cost)
         old_chemistry = chemistry_from_vector(config, alloys, old_x_for_chemistry)
+        excel_rule_eval = evaluate_excel_plan(config, alloys, old_x, old_raw_x)
         constraints = constraint_text(config)
 
         diagnostics: list[str] = []
@@ -528,6 +575,12 @@ def compute_rows(source_workbook_path: Path = SOURCE_WORKBOOK) -> tuple[list[dic
             counters["source_audit_warnings"] += 1
         if any("投料为负" in note for note in audit_notes):
             counters["negative_alloy_rows"] += 1
+        if excel_rule_eval["status"] == "是":
+            counters["excel_rule_ok"] += 1
+        elif excel_rule_eval["status"] == "否":
+            counters["excel_rule_ng"] += 1
+        else:
+            counters["excel_rule_input_error"] += 1
 
         explanation = explain_row(
             status,
@@ -537,6 +590,8 @@ def compute_rows(source_workbook_path: Path = SOURCE_WORKBOOK) -> tuple[list[dic
             old_x,
             new_x,
             old_chemistry,
+            excel_rule_eval["status"],
+            excel_rule_eval["issues"],
             old_cost,
             old_cost_raw,
             old_total_raw,
@@ -562,6 +617,9 @@ def compute_rows(source_workbook_path: Path = SOURCE_WORKBOOK) -> tuple[list[dic
             "终点Mn": config["residual"].get("Mn"),
             "LP状态": status,
             "Excel结果状态": excel_result_status,
+            "Excel是否满足批准规则": excel_rule_eval["status"],
+            "Excel原方案成分校核": chemistry_text(excel_rule_eval["checks"]),
+            "Excel不满足批准规则原因": "；".join(excel_rule_eval["issues"]),
             "源表审计状态": "OK" if not audit_notes else "WARN",
             "源表审计提示": "；".join(audit_notes),
             "Excel合金消耗kg/t": old_total,
@@ -621,6 +679,9 @@ def compute_rows(source_workbook_path: Path = SOURCE_WORKBOOK) -> tuple[list[dic
         "recovery_overrides": counters["recovery_overrides"],
         "source_audit_warnings": counters["source_audit_warnings"],
         "negative_alloy_rows": counters["negative_alloy_rows"],
+        "excel_rule_ok": counters["excel_rule_ok"],
+        "excel_rule_ng": counters["excel_rule_ng"],
+        "excel_rule_input_error": counters["excel_rule_input_error"],
         "old_cost_total": sum(row["Excel合金成本元/t"] or 0 for row in ok_rows),
         "new_cost_total": sum(row["新算法合金成本元/t"] or 0 for row in ok_rows),
         "old_kg_total": sum(row["Excel合金消耗kg/t"] or 0 for row in ok_rows),
@@ -647,6 +708,9 @@ def result_headers(alloys: list[dict[str, Any]]) -> list[str]:
         "终点Mn",
         "LP状态",
         "Excel结果状态",
+        "Excel是否满足批准规则",
+        "Excel原方案成分校核",
+        "Excel不满足批准规则原因",
         "源表审计状态",
         "源表审计提示",
         "Excel合金消耗kg/t",
@@ -716,14 +780,14 @@ def write_workbook(rows: list[dict[str, Any]], details: list[dict[str, Any]], me
     summary_rows = [
         (
             "源文件",
-            f"{source_workbook.name}!1.合金成本 第{source_row_range}行, AB4:AT4单价, AH列铝块；炼钢参数表 第{source_row_range}行",
+            f"{source_workbook.name}!1.合金成本 第{source_row_range}行, AB4:AU4单价, AH列铝块；炼钢参数表 第{source_row_range}行",
             "本次不读取外部铝耗表或合金价格表，所有输入来自同一个 workbook。",
         ),
         ("LP口径", "当前 app.core + process_rules + target_bounds_from_single_value", "铝块 manual_aluminum，不参与LP自动优化；新方案固定使用同源 AH 铝块值计入总耗和成本。"),
         (
             "行数",
             summary["total"],
-            f"数据行 {source_row_range}；LP可行 {summary['ok']}；不可行 {summary['infeasible']}；Excel原结果错误 {summary['excel_result_errors']}；AH铝耗缺失 {summary['missing_aluminum']}。",
+            f"数据行 {source_row_range}；LP可行 {summary['ok']}；不可行 {summary['infeasible']}；Excel原结果错误 {summary['excel_result_errors']}；批准规则下 Excel 可行 {summary['excel_rule_ok']}、不可行 {summary['excel_rule_ng']}、输入异常 {summary['excel_rule_input_error']}；AH铝耗缺失 {summary['missing_aluminum']}。",
         ),
         (
             "成本累计",
@@ -836,6 +900,9 @@ def main() -> None:
                 "ok": summary["ok"],
                 "infeasible": summary["infeasible"],
                 "excel_result_errors": summary["excel_result_errors"],
+                "excel_rule_ok": summary["excel_rule_ok"],
+                "excel_rule_ng": summary["excel_rule_ng"],
+                "excel_rule_input_error": summary["excel_rule_input_error"],
                 "missing_aluminum": summary["missing_aluminum"],
                 "source_audit_warnings": summary["source_audit_warnings"],
                 "negative_alloy_rows": summary["negative_alloy_rows"],

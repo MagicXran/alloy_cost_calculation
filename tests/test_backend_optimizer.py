@@ -13,6 +13,7 @@ from app.core import (
     diagnose_infeasible,
     effective_bounds,
     element_increment_kg_per_t,
+    evaluate_plan_against_rules,
     solve_alloy_cost,
     solve_element_limit_under_other_constraints,
     validate_config,
@@ -185,6 +186,7 @@ def test_confirmed_process_rules_adjust_targets_and_alloy_bounds():
 
     assert constraints[("C", "max")]["b"] == pytest.approx(0.055)
     assert constraints[("Ti", "min")]["b"] == pytest.approx(-0.025)
+    assert constraints[("Ti", "max")]["b"] == pytest.approx(0.025)
     assert ("Als", "min") not in constraints
     assert ("Ni", "min") not in constraints
     assert ("B", "min") not in constraints
@@ -196,6 +198,28 @@ def test_confirmed_process_rules_adjust_targets_and_alloy_bounds():
     assert bounds_by_name["硼铁"] == (0.0, 0.0)
     assert bounds_by_name["磷铁"] == (0.0, 0.0)
     assert bounds_by_name["硫铁"] == (0.0, 0.0)
+
+
+def test_evaluate_plan_against_rules_can_ignore_manual_aluminum_upper_bound():
+    config = {
+        "heat_weight_t": 100,
+        "target": {"Als": {"min": 0.01}, "C": {"max": 0.10}},
+        "residual": {"Als": 0, "C": 0.04},
+        "recovery_rates": {"Als": 0.15, "Alt": 0.15, "C": 0.9},
+        "safety_margins": {},
+        "control_targets": {"enabled": False, "margin": 0, "elements": {}},
+        "process_rules": {"manual_aluminum": True},
+        "alloys": [
+            {"name": "铝块", "price_per_ton": 22000, "max_add_kg_per_t": 5, "bag_size_kg": 0, "composition": {"Als": 99}},
+        ],
+    }
+
+    strict = evaluate_plan_against_rules(config, config["alloys"], [2.0], ignore_manual_aluminum=False)
+    manual = evaluate_plan_against_rules(config, config["alloys"], [2.0], ignore_manual_aluminum=True)
+
+    assert strict["ok"] is False
+    assert any("铝块投料超过上限" in issue for issue in strict["issues"])
+    assert manual["ok"] is True
 
 
 def test_infeasible_diagnostics_respect_process_disabled_alloys():

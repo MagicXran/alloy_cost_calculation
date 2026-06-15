@@ -110,8 +110,6 @@ def apply_process_rules_to_bounds(config: dict[str, Any], element: str, bounds: 
         addition = float(rules["ti_safety_addition"])
         if adjusted["min"] is not None:
             adjusted["min"] += addition
-        if adjusted["max"] is not None:
-            adjusted["max"] += addition
 
     if element in {"Als", "Alt"} and rules["manual_aluminum"]:
         return {"min": None, "max": None}
@@ -604,6 +602,45 @@ def chemistry_checks(config: dict[str, Any], chemistry: dict[str, float]) -> lis
         below_max = bounds["max"] is None or value <= bounds["max"] + 1e-7
         checks.append({"element": element, "value": value, "min": bounds["min"], "max": bounds["max"], "ok": above_min and below_max})
     return checks
+
+
+def evaluate_plan_against_rules(
+    config: dict[str, Any],
+    alloys: list[dict[str, Any]],
+    x: list[float],
+    *,
+    ignore_manual_aluminum: bool = False,
+) -> dict[str, Any]:
+    """校核一组既定投料是否满足当前批准规则。"""
+
+    chemistry = chemistry_from_vector(config, alloys, x)
+    checks = chemistry_checks(config, chemistry)
+    issues: list[str] = []
+    for check in checks:
+        if check["ok"]:
+            continue
+        if check["min"] is not None and check["value"] < check["min"] - 1e-7:
+            issues.append(
+                f"{check['element']}低于下限：{format_number(check['value'], 4)}% < {format_number(check['min'], 4)}%"
+            )
+        elif check["max"] is not None and check["value"] > check["max"] + 1e-7:
+            issues.append(
+                f"{check['element']}高于上限：{format_number(check['value'], 4)}% > {format_number(check['max'], 4)}%"
+            )
+
+    bounds = build_linear_model(config, alloys).bounds
+    for index, alloy in enumerate(alloys):
+        name = str(alloy.get("name") or "")
+        if ignore_manual_aluminum and alloy_name_matches(name, ("铝块", "铝粒", "铝锭", "铝线")):
+            continue
+        value = float(x[index] or 0)
+        lower, upper = bounds[index]
+        if value < lower - EPS:
+            issues.append(f"{name}投料低于下限：{format_number(value, 4)} kg/t < {format_number(lower, 4)} kg/t")
+        if value > upper + EPS:
+            issues.append(f"{name}投料超过上限：{format_number(value, 4)} kg/t > {format_number(upper, 4)} kg/t")
+
+    return {"ok": not issues, "chemistry": chemistry, "checks": checks, "issues": issues}
 
 
 def diagnose_infeasible(config: dict[str, Any], alloys: list[dict[str, Any]], solver: Solver | None = None) -> list[str]:

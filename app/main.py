@@ -125,7 +125,7 @@ def get_config() -> dict:
 def download_template() -> Response:
     """下载系统推荐的批量计算 Excel 模板。"""
 
-    content = generate_template_workbook()
+    content = generate_template_workbook(load_runtime_config().get("process_rules"))
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

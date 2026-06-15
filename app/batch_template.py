@@ -11,7 +11,7 @@ import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils.exceptions import InvalidFileException
 
-from app.core import OptimizerError, solve_alloy_cost
+from app.core import DEFAULT_PROCESS_RULES, OptimizerError, solve_alloy_cost
 from app.solvers import get_solver
 
 
@@ -22,23 +22,7 @@ ERROR_FIELD_ELEMENTS = ["P", "S"] + [element for element in TEMPLATE_ELEMENTS if
 TARGET_IGNORED_ELEMENTS = {"Ca"}
 FIXED_RECOVERY_RATES = {"Als": 0.15, "Alt": 0.15}
 SINGLE_TARGET_UPPER_ONLY_ELEMENTS = {"C", "P", "S"}
-SINGLE_TARGET_MARGINS = {
-    "Si": 0.02,
-    "Mn": 0.02,
-    "V": 0.001,
-    "Nb": 0.001,
-    "Ti": 0.005,
-    "Als": 0.005,
-    "Alt": 0.005,
-    "Cr": 0.03,
-    "Ni": 0.01,
-    "Cu": 0.01,
-    "Mo": 0.01,
-    "B": 0.0002,
-    "Sb": 0.01,
-}
 LOW_TARGET_NO_ADDITION_THRESHOLDS = {"Ni": 0.02, "Cu": 0.02, "Mo": 0.02, "Sb": 0.02, "B": 0.0002}
-SI_UPPER_ONLY_THRESHOLD = 0.05
 FIELD_CONFIRMED_RECOVERY_OVERRIDES = {("26MNB5", "Si"): 0.8}
 BUSINESS_SHEETS = [
     "01_批量任务",
@@ -55,16 +39,50 @@ REQUIRED_HEADERS = {
     "04_合金成分库": ["合金名称", "价格物料名", "启用", "袋重kg", "最大投加kg每t"],
     "05_价格表": ["价格方案", "物料名称", "价格日期", "价格元每吨"],
 }
+RULES_SHEET = "07_工艺规则参数"
+RULES_HEADERS = ["规则项", "参数键", "值", "说明"]
+RULES_TEMPLATE_ROWS = [
+    ("规则总开关", "enabled", True, "是否启用现场确认的 8 条工艺规则；是/否。"),
+    ("控碳余量", "carbon_target_margin", 0.005, "C 上限按 目标值-该余量 控制。"),
+    ("禁硅阈值", "disable_silicon_alloys_si_max", 0.04, "Si 目标 <= 该阈值时禁用硅锰/硅铁。"),
+    ("铝块单独录入", "manual_aluminum", True, "铝块不参与 LP 自动优化，由现场单独录入。"),
+    ("Ti 安全余量", "ti_safety_addition", 0.005, "Ti 只在下限侧加一次该余量。"),
+    ("Ni 禁投阈值", "trace_alloy_thresholds.Ni", 0.02, "Ni 目标 <= 该阈值时不投镍板。"),
+    ("Cu 禁投阈值", "trace_alloy_thresholds.Cu", 0.02, "Cu 目标 <= 该阈值时不投铜板。"),
+    ("Mo 禁投阈值", "trace_alloy_thresholds.Mo", 0.02, "Mo 目标 <= 该阈值时不投钼铁。"),
+    ("Sb 禁投阈值", "trace_alloy_thresholds.Sb", 0.02, "Sb 目标 <= 该阈值时不投锑锭。"),
+    ("B 禁投阈值", "trace_alloy_thresholds.B", 0.0002, "B 目标 <= 该阈值时不投硼铁。"),
+    ("磷铁禁投阈值", "phosphorus_alloy_max", 0.04, "P 目标 <= 该阈值时不投磷铁。"),
+    ("硫铁禁投阈值", "sulfur_alloy_max", 0.03, "S 目标 <= 该阈值时不投硫铁。"),
+]
 ALLOY_METADATA_HEADERS = set(REQUIRED_HEADERS["04_合金成分库"]) | {"投料方式", "投加顺序", "备注"}
 FEED_MODES = {"连续", "整袋"}
 BATCH_RESULTS: dict[str, dict] = {}
 
 
-def generate_template_workbook() -> bytes:
+def default_process_rules() -> dict:
+    """返回模板与批量链路使用的默认工艺规则。"""
+
+    return deepcopy(DEFAULT_PROCESS_RULES)
+
+
+def rule_template_value(process_rules: dict, key: str):
+    """从嵌套规则 dict 读取模板展示值。"""
+
+    current = process_rules
+    for part in key.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def generate_template_workbook(process_rules: dict | None = None) -> bytes:
     """生成系统推荐的批量计算上传模板。"""
 
     workbook = openpyxl.Workbook()
     workbook.remove(workbook.active)
+    template_rules = deepcopy(process_rules) if isinstance(process_rules, dict) else default_process_rules()
 
     q235b_target = {"C": 0.16, "Si": 0.05, "Mn": 0.20, "P": 0.025, "S": 0.020}
     q355c_target = {"C": 0.16, "Si": 0.10, "Mn": 0.90, "P": 0.018, "S": 0.010}
@@ -140,17 +158,30 @@ def generate_template_workbook() -> bytes:
             ["模板版本", TEMPLATE_VERSION],
             ["填写流程", "下载模板 -> 填业务数据 -> 上传预检 -> 预检通过后批量计算 -> 导出结果"],
             ["单位规则", "成分按百分数数值填写，例如 0.23 表示 0.23%；合金品位 65.66 表示 65.66%。"],
-            ["外部单值规则", "目标成分表使用 元素目标 单值列：C/P/S 按上限控制；Ca 目标值始终不参与约束；Si<=0.05 按上限控制，Si>0.05 按下限并自动加 0.02 上限余量；Ti 目标自动加 0.005 安全余量；其他合金化元素按下限并自动加元素余量。旧的 元素下限/元素上限 上传列仍兼容。"],
-            ["现场工艺规则", "LP 按 C目标-0.005 控碳；Si目标<=0.04 时禁用硅锰/硅铁；铝块按现场单独录入，不参与 LP 自动优化；Ni/Cu/Mo/Sb<=0.02、B<=0.0002 时不投对应合金；P<=0.040、S<=0.030 时不投磷硫铁合金。"],
-            ["合金用量公式", "kg/t = (目标成分 - 转炉终点成分) / 合金品位 / 回收率 * 1000；26MnB5 的 Si 回收率若录成 0 会按现场确认值 0.8 修正；其他参与计算元素必须在转炉终点与回收率表填写回收率。"],
+            ["外部单值规则", "目标成分表使用 元素目标 单值列：C/P/S 按上限控制；Ni/Cu/Mo/Sb<=0.02、B<=0.0002 时可留空或直接视为不投；其余元素单值目标按下限控制。旧的 元素下限/元素上限 上传列仍兼容。"],
+            ["现场工艺规则", "以 07_工艺规则参数 sheet 为准：当前批准规则只有 C目标-余量、Si<=阈值禁硅、金属锰兜底、铝块按现场单独录入、Ti 下限+余量、Ni/Cu/Mo/Sb/B 低目标禁投、P/S 低目标禁投磷硫铁。"],
+            ["合金用量公式", "kg/t = (目标成分 - 有效终点成分) / 合金品位 / 回收率 * 1000；当前批量链路只使用 C/Mn 终点扣减，V/Nb/Ti/Cr 等不做终点残余扣减；26MnB5 的 Si 回收率若录成 0 会按现场确认值 0.8 修正。"],
             ["标准元素", "标准模板仅保留 C, Si, Mn, P, S, V, Nb, Ti, Als, Alt, Ca, Cr, Ni, Cu, Mo, B, Sb；旧模板里的 N 上传时会被忽略。"],
             ["P/S 规则", "P/S 通常只填写上限；转炉终点已超过上限时任务直接失败。"],
             ["投料方式", "投料方式只能填写 连续 或 整袋；连续物料袋重kg留空或填 0，整袋物料袋重kg必须大于 0。"],
             ["路线序号", "最优路线明细中的路线序号只表示导出排序，从 1 开始，按成本贡献降序排列；它不是现场真实投料顺序。"],
+            ["规则参数", "07_工艺规则参数 是可编辑业务 sheet；修改阈值后，预检通过的批量任务会按该 sheet 中的规则求解。"],
             ["禁止内容", "业务输入区不允许合并单元格、公式、空表头、重复表头、隐藏必填列。"],
             ["错误定位", "系统会返回 sheet、行号、字段、错误码、原因和修正建议。"],
         ],
         {"A": 18, "B": 96},
+    )
+    create_sheet(
+        workbook,
+        RULES_SHEET,
+        [
+            RULES_HEADERS,
+            *[
+                [label, key, rule_template_value(template_rules, key), note]
+                for label, key, _, note in RULES_TEMPLATE_ROWS
+            ],
+        ],
+        {"A": 18, "B": 28, "C": 14, "D": 70},
     )
 
     output = BytesIO()
@@ -226,6 +257,8 @@ def parse_template_workbook(content: bytes) -> dict:
     rows_by_sheet: dict[str, list[dict]] = {}
     for sheet_name in BUSINESS_SHEETS:
         rows_by_sheet[sheet_name] = read_business_sheet(workbook[sheet_name], errors)
+    if RULES_SHEET in workbook.sheetnames:
+        rows_by_sheet[RULES_SHEET] = read_business_sheet(workbook[RULES_SHEET], errors, required_headers=RULES_HEADERS)
 
     if errors:
         return report_with_errors(errors)
@@ -259,7 +292,7 @@ def report_with_errors(errors: list[dict]) -> dict:
     }
 
 
-def read_business_sheet(sheet, errors: list[dict]) -> list[dict]:
+def read_business_sheet(sheet, errors: list[dict], required_headers: list[str] | None = None) -> list[dict]:
     """读取一个业务 sheet，并做结构级校验。"""
 
     sheet_name = sheet.title
@@ -284,7 +317,7 @@ def read_business_sheet(sheet, errors: list[dict]) -> list[dict]:
             errors.append(make_issue(sheet_name, 1, header, "DUPLICATE_HEADER", f"表头重复：{header}", "请删除或重命名重复表头。"))
         seen[header] = index
 
-    for header in REQUIRED_HEADERS[sheet_name]:
+    for header in required_headers or REQUIRED_HEADERS[sheet_name]:
         column = seen.get(header)
         if column is None:
             errors.append(make_issue(sheet_name, 1, header, "MISSING_HEADER", f"缺少必填字段：{header}", "请使用系统模板表头。"))
@@ -324,6 +357,7 @@ def read_business_sheet(sheet, errors: list[dict]) -> list[dict]:
 def build_parsed_template(rows_by_sheet: dict[str, list[dict]], errors: list[dict], warnings: list[dict]) -> dict:
     """把各 sheet 原始行转换成批量求解输入。"""
 
+    process_rules = parse_process_rules_rows(rows_by_sheet.get(RULES_SHEET) or [], errors)
     target_rows = parse_target_rows(rows_by_sheet["02_目标成分上下限"], errors)
     endpoint_rows = parse_endpoint_rows(rows_by_sheet["03_转炉终点与回收率"], errors)
     validate_unique_steelmaking_grade(target_rows, "02_目标成分上下限", errors)
@@ -399,6 +433,7 @@ def build_parsed_template(rows_by_sheet: dict[str, list[dict]], errors: list[dic
                     "recovery_rates": recovery_rates,
                     "safety_margins": {element: {"low": 0, "high": 0} for element in target_spec},
                     "control_targets": {"enabled": False, "margin": 0, "elements": {}},
+                    "process_rules": deepcopy(process_rules),
                     "alloys": config_alloys,
                     "milp_settings": {"default_bag_size_kg": 25, "enable_bag_rounding": True},
                     "temperature_drop": {"enabled": False},
@@ -407,7 +442,54 @@ def build_parsed_template(rows_by_sheet: dict[str, list[dict]], errors: list[dic
         )
     if errors:
         return {}
-    return {"templateVersion": TEMPLATE_VERSION, "tasks": parsed_tasks, "alloys": alloy_rows, "prices": prices}
+    return {"templateVersion": TEMPLATE_VERSION, "tasks": parsed_tasks, "alloys": alloy_rows, "prices": prices, "processRules": process_rules}
+
+
+def parse_process_rules_rows(rows: list[dict], errors: list[dict]) -> dict:
+    """解析模板里的可编辑工艺规则；缺省时退回系统默认值。"""
+
+    rules = default_process_rules()
+    if not rows:
+        return rules
+
+    allowed_keys = {key for _, key, _, _ in RULES_TEMPLATE_ROWS}
+    seen: set[str] = set()
+    for row in rows:
+        key = optional_text(row.get("参数键"))
+        if not key:
+            continue
+        if key in seen:
+            errors.append(make_issue(RULES_SHEET, row["_row"], "参数键", "DUPLICATE_RULE_KEY", f"规则参数重复：{key}", "每个参数键只能出现一次。"))
+            continue
+        seen.add(key)
+        if key not in allowed_keys:
+            errors.append(make_issue(RULES_SHEET, row["_row"], "参数键", "UNKNOWN_RULE_KEY", f"未知规则参数：{key}", "请使用系统模板给出的参数键，不要自行改名。"))
+            continue
+
+        raw_value = row.get("值")
+        if raw_value in (None, ""):
+            continue
+
+        if key in {"enabled", "manual_aluminum"}:
+            parsed = parse_bool_flag(raw_value, RULES_SHEET, row["_row"], "值", errors)
+            if parsed is None:
+                continue
+            rules[key] = parsed
+            continue
+
+        maximum = 10 if key == "disable_silicon_alloys_si_max" else 1.2
+        parsed_number = optional_number(raw_value, RULES_SHEET, row["_row"], "值", errors, minimum=0, maximum=maximum, allow_zero=True)
+        if parsed_number is None:
+            continue
+
+        if key.startswith("trace_alloy_thresholds."):
+            element = key.split(".", 1)[1]
+            thresholds = dict(rules.get("trace_alloy_thresholds") or {})
+            thresholds[element] = parsed_number
+            rules["trace_alloy_thresholds"] = thresholds
+        else:
+            rules[key] = parsed_number
+    return rules
 
 
 def run_batch_optimization(parsed_template: dict, solver_name: str = "highs") -> dict:
@@ -480,6 +562,7 @@ def validate_prechecked_config(config: dict, task_index: int) -> None:
         "recovery_rates": dict,
         "safety_margins": dict,
         "control_targets": dict,
+        "process_rules": dict,
         "alloys": list,
         "milp_settings": dict,
     }
@@ -642,10 +725,7 @@ def target_bounds_from_single_value(element: str, value: float) -> dict[str, flo
         return {}
     if element in SINGLE_TARGET_UPPER_ONLY_ELEMENTS:
         return {"max": target}
-    if element == "Si" and target <= SI_UPPER_ONLY_THRESHOLD:
-        return {"max": target}
-    margin = SINGLE_TARGET_MARGINS.get(element, 0.0)
-    return {"min": target, "max": normalized_float(target + margin)}
+    return {"min": target}
 
 
 def single_target_values_to_bounds(values_by_element: dict[str, float]) -> dict[str, dict[str, float]]:
@@ -810,7 +890,11 @@ def match_business_row(records: list[dict], task: dict, sheet: str, errors: list
 
 def build_residual(target: dict, endpoint_residual: dict, alloys: list[dict]) -> dict[str, float]:
     elements = ordered_elements(target, alloys)
-    return {element: float(endpoint_residual.get(element, 0) or 0) for element in elements}
+    residual = {element: 0.0 for element in elements}
+    for element in ("C", "Mn"):
+        if element in residual:
+            residual[element] = float(endpoint_residual.get(element, 0) or 0)
+    return residual
 
 
 def build_recovery_rates(target: dict, endpoint_recovery: dict, endpoint_row: int | None, alloys: list[dict], errors: list[dict]) -> dict[str, float]:
@@ -915,6 +999,19 @@ def parse_enabled(value, sheet: str, row: int, errors: list[dict]) -> bool:
         return False
     errors.append(make_issue(sheet, row, "启用", "INVALID_BOOLEAN", f"启用字段无法识别：{text}", "请填写 是 或 否。"))
     return False
+
+
+def parse_bool_flag(value, sheet: str, row: int, field: str, errors: list[dict]) -> bool | None:
+    text = optional_text(value)
+    if text is None:
+        return None
+    normalized = text.lower()
+    if normalized in {"是", "启用", "true", "1", "yes", "y"}:
+        return True
+    if normalized in {"否", "禁用", "false", "0", "no", "n"}:
+        return False
+    errors.append(make_issue(sheet, row, field, "INVALID_BOOLEAN", f"{field} 字段无法识别：{text}", "请填写 是 或 否。"))
+    return None
 
 
 def element_header(header: str, suffixes: tuple[str, ...]) -> tuple[str, str] | None:

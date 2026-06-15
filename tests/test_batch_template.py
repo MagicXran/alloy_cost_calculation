@@ -7,7 +7,7 @@ import openpyxl
 import pytest
 from fastapi.testclient import TestClient
 
-from app.batch_template import TEMPLATE_ELEMENTS, export_batch_result, generate_template_workbook, parse_template_workbook, run_batch_optimization
+from app.batch_template import RULES_SHEET, TEMPLATE_ELEMENTS, export_batch_result, generate_template_workbook, parse_template_workbook, run_batch_optimization
 from app.core import alloy_coeff, effective_bounds
 from app.main import app
 
@@ -24,6 +24,7 @@ def workbook_bytes(
     endpoint_rows: list[list] | None = None,
     alloy_header: list[str] | None = None,
     alloy_rows: list[list] | None = None,
+    rule_rows: list[list] | None = None,
 ) -> bytes:
     """Build a minimal user-facing upload template in memory."""
 
@@ -119,6 +120,11 @@ def workbook_bytes(
     rules = wb.create_sheet("06_填写说明与校验规则")
     rules.append(["模板版本", "1"])
     rules.append(["说明", "N 元素不参与合金优化。"])
+    if rule_rows is not None:
+        rule_sheet = wb.create_sheet(RULES_SHEET)
+        rule_sheet.append(["规则项", "参数键", "值", "说明"])
+        for row in rule_rows:
+            rule_sheet.append(row)
 
     output = BytesIO()
     wb.save(output)
@@ -136,7 +142,7 @@ def test_parse_template_workbook_builds_prevalidated_payload():
     assert report["parsed"]["tasks"][0]["config"]["residual"]["Si"] == 0
 
 
-def test_single_target_values_expand_to_bounds_with_element_margins():
+def test_single_target_values_follow_clean_rule_bounds_without_hidden_margins():
     report = parse_template_workbook(
         workbook_bytes(
             target_header=[
@@ -174,27 +180,53 @@ def test_single_target_values_expand_to_bounds_with_element_margins():
     q355c_target = report["parsed"]["tasks"][1]["config"]["target"]
 
     assert q235b_target["C"] == {"max": 0.16}
-    assert q235b_target["Si"] == {"max": 0.05}
-    assert q235b_target["Mn"] == {"min": 0.20, "max": 0.22}
+    assert q235b_target["Si"] == {"min": 0.05}
+    assert q235b_target["Mn"] == {"min": 0.20}
     assert q235b_target["P"] == {"max": 0.025}
     assert q235b_target["S"] == {"max": 0.020}
-    assert q235b_target["Als"] == {"min": 0.010, "max": 0.015}
+    assert q235b_target["Als"] == {"min": 0.010}
     assert "Ca" not in q235b_target
-    assert q355c_target["Si"] == {"min": 0.10, "max": 0.12}
-    assert q355c_target["V"] == {"min": 0.030, "max": 0.031}
-    assert q355c_target["Nb"] == {"min": 0.020, "max": 0.021}
-    assert q355c_target["Ti"] == {"min": 0.025, "max": 0.030}
+    assert q355c_target["Si"] == {"min": 0.10}
+    assert q355c_target["V"] == {"min": 0.030}
+    assert q355c_target["Nb"] == {"min": 0.020}
+    assert q355c_target["Ti"] == {"min": 0.025}
     ti_bounds = effective_bounds(report["parsed"]["tasks"][1]["config"], "Ti")
     assert ti_bounds["min"] == pytest.approx(0.030)
-    assert ti_bounds["max"] == pytest.approx(0.035)
-    assert q355c_target["Alt"] == {"min": 0.030, "max": 0.035}
+    assert ti_bounds["max"] is None
+    assert q355c_target["Alt"] == {"min": 0.030}
     assert "Ca" not in q355c_target
-    assert q355c_target["Cr"] == {"min": 0.20, "max": 0.23}
-    assert q355c_target["Ni"] == {"min": 0.10, "max": 0.11}
-    assert q355c_target["Cu"] == {"min": 0.10, "max": 0.11}
-    assert q355c_target["Mo"] == {"min": 0.05, "max": 0.06}
-    assert q355c_target["B"] == {"min": 0.002, "max": 0.0022}
-    assert q355c_target["Sb"] == {"min": 0.03, "max": 0.04}
+    assert q355c_target["Cr"] == {"min": 0.20}
+    assert q355c_target["Ni"] == {"min": 0.10}
+    assert q355c_target["Cu"] == {"min": 0.10}
+    assert q355c_target["Mo"] == {"min": 0.05}
+    assert q355c_target["B"] == {"min": 0.002}
+    assert q355c_target["Sb"] == {"min": 0.03}
+
+
+def test_rule_sheet_overrides_batch_process_rules():
+    report = parse_template_workbook(
+        workbook_bytes(
+            rule_rows=[
+                ["规则总开关", "enabled", "是", ""],
+                ["控碳余量", "carbon_target_margin", 0.004, ""],
+                ["禁硅阈值", "disable_silicon_alloys_si_max", 0.03, ""],
+                ["铝块单独录入", "manual_aluminum", "否", ""],
+                ["Ti 安全余量", "ti_safety_addition", 0.006, ""],
+                ["Ni 禁投阈值", "trace_alloy_thresholds.Ni", 0.018, ""],
+                ["P 禁投阈值", "phosphorus_alloy_max", 0.045, ""],
+            ]
+        )
+    )
+
+    assert report["status"] == "ok"
+    rules = report["parsed"]["tasks"][0]["config"]["process_rules"]
+    assert rules["enabled"] is True
+    assert rules["carbon_target_margin"] == pytest.approx(0.004)
+    assert rules["disable_silicon_alloys_si_max"] == pytest.approx(0.03)
+    assert rules["manual_aluminum"] is False
+    assert rules["ti_safety_addition"] == pytest.approx(0.006)
+    assert rules["trace_alloy_thresholds"]["Ni"] == pytest.approx(0.018)
+    assert rules["phosphorus_alloy_max"] == pytest.approx(0.045)
 
 
 def test_non_element_target_headers_are_ignored():
@@ -564,6 +596,7 @@ def test_template_download_api_returns_parseable_standard_template():
         "04_合金成分库",
         "05_价格表",
         "06_填写说明与校验规则",
+        RULES_SHEET,
     } <= set(workbook.sheetnames)
     report = parse_template_workbook(response.content)
     assert report["status"] == "ok"
@@ -599,12 +632,17 @@ def test_download_template_uses_requested_element_scope():
     assert "N回收率" not in endpoint_headers
     assert "N" not in alloy_headers
     assert "C/P/S 按上限控制" in rules_text
-    assert "Ca 目标值始终不参与约束" in rules_text
-    assert "Ti 目标自动加 0.005" in rules_text
-    assert "LP 按 C目标-0.005 控碳" in rules_text
+    assert "其余元素单值目标按下限控制" in rules_text
+    assert "Ti 只在下限侧加一次该余量" not in rules_text
+    assert "C目标-余量" in rules_text
     assert "铝块按现场单独录入" in rules_text
     assert "26MnB5 的 Si 回收率若录成 0" in rules_text
     assert "旧模板里的 N 上传时会被忽略" in rules_text
+    rule_sheet = workbook[RULES_SHEET]
+    rule_headers = [cell.value for cell in rule_sheet[1]]
+    assert rule_headers == ["规则项", "参数键", "值", "说明"]
+    assert rule_sheet["B2"].value == "enabled"
+    assert rule_sheet["B6"].value == "ti_safety_addition"
 
 
 def test_checked_in_template_matches_generated_template_values():
@@ -731,6 +769,7 @@ def test_batch_optimize_rejects_nested_malformed_prevalidated_payload():
                             "recovery_rates": {},
                             "safety_margins": {},
                             "control_targets": {},
+                            "process_rules": {},
                             "alloys": [1],
                             "milp_settings": {},
                         },
