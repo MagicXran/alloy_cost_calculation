@@ -177,24 +177,35 @@ def test_single_target_values_follow_confirmed_exact_target_semantics_without_hi
 
     assert report["status"] == "ok"
     q235b_target = report["parsed"]["tasks"][0]["config"]["target"]
+    q235b_spec = report["parsed"]["tasks"][0]["config"]["target_spec"]
     q355c_target = report["parsed"]["tasks"][1]["config"]["target"]
+    q355c_spec = report["parsed"]["tasks"][1]["config"]["target_spec"]
 
-    assert q235b_target["C"] == {"max": 0.16}
+    assert q235b_spec["C"] == {"mode": "single", "value": 0.16}
+    assert q235b_target["C"] == {"max": pytest.approx(0.155)}
     assert q235b_target["Si"] == {"max": 0.05}
     assert q235b_target["Mn"] == {"min": 0.20, "max": 0.20}
     assert q235b_target["P"] == {"max": 0.025}
     assert q235b_target["S"] == {"max": 0.020}
-    assert q235b_target["Als"] == {"min": 0.010, "max": 0.010}
+    assert q235b_spec["Als"] == {"mode": "single", "value": 0.010}
+    assert "Als" not in q235b_target
     assert "Ca" not in q235b_target
+    assert q355c_spec["Si"] == {"mode": "single", "value": 0.10}
+    assert q355c_target["C"] == {"max": pytest.approx(0.155)}
     assert q355c_target["Si"] == {"min": 0.10, "max": 0.10}
     assert q355c_target["Mn"] == {"min": 0.90, "max": 0.90}
+    assert q355c_target["P"] == {"max": 0.018}
+    assert q355c_target["S"] == {"max": 0.010}
     assert q355c_target["V"] == {"min": 0.030, "max": 0.030}
     assert q355c_target["Nb"] == {"min": 0.020, "max": 0.020}
-    assert q355c_target["Ti"] == {"min": 0.025, "max": 0.025}
+    assert q355c_spec["Ti"] == {"mode": "single", "value": 0.025}
+    assert q355c_target["Ti"]["min"] == pytest.approx(0.030)
+    assert q355c_target["Ti"]["max"] == pytest.approx(0.030)
     ti_bounds = effective_bounds(report["parsed"]["tasks"][1]["config"], "Ti")
-    assert ti_bounds["min"] == pytest.approx(0.025)
-    assert ti_bounds["max"] == pytest.approx(0.025)
-    assert q355c_target["Alt"] == {"min": 0.030, "max": 0.030}
+    assert ti_bounds["min"] == pytest.approx(0.030)
+    assert ti_bounds["max"] == pytest.approx(0.030)
+    assert q355c_spec["Alt"] == {"mode": "single", "value": 0.030}
+    assert "Alt" not in q355c_target
     assert "Ca" not in q355c_target
     assert q355c_target["Cr"] == {"min": 0.20, "max": 0.20}
     assert q355c_target["Ni"] == {"min": 0.10, "max": 0.10}
@@ -258,6 +269,37 @@ def test_non_element_target_headers_are_ignored():
     target = report["parsed"]["tasks"][0]["config"]["target"]
     assert "成本" not in target
     assert "产量" not in target
+
+
+def test_zero_target_value_is_treated_as_unconstrained():
+    report = parse_template_workbook(
+        workbook_bytes(
+            target_header=[
+                "适用牌号",
+                "最小厚度mm",
+                "最大厚度mm",
+                "炼钢牌号",
+                "Mn目标",
+                "Mo目标",
+                "P目标",
+                "S目标",
+            ],
+            target_rows=[
+                ["Q235B", 1.5, 12, "Q235B-1", 0, 0, 0.025, 0.020],
+                ["Q355C", 3, 12, "Q355C-1", 0.90, 0, 0.018, 0.010],
+            ],
+        )
+    )
+
+    assert report["status"] == "ok"
+    q235b_config = report["parsed"]["tasks"][0]["config"]
+    q355c_config = report["parsed"]["tasks"][1]["config"]
+    assert q235b_config["target_spec"]["Mn"]["mode"] == "none"
+    assert q235b_config["target_spec"]["Mo"]["mode"] == "none"
+    assert "Mn" not in q235b_config["target"]
+    assert "Mo" not in q235b_config["target"]
+    assert q355c_config["target_spec"]["Mo"]["mode"] == "none"
+    assert "Mo" not in q355c_config["target"]
 
 
 def test_legacy_ca_target_bounds_are_ignored():
@@ -458,7 +500,7 @@ def test_business_rows_match_only_by_unique_steelmaking_grade():
     )
 
     assert report["status"] == "ok"
-    assert report["parsed"]["tasks"][0]["config"]["target"]["C"] == {"max": 0.16}
+    assert report["parsed"]["tasks"][0]["config"]["target"]["C"] == {"max": pytest.approx(0.155)}
 
 
 def test_target_and_endpoint_legacy_match_fields_are_optional_when_steelmaking_grade_is_unique():
@@ -580,7 +622,7 @@ def test_template_api_validate_batch_and_export():
     assert export.status_code == 200
     assert export.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     exported = openpyxl.load_workbook(BytesIO(export.content), data_only=True)
-    assert {"批量计算汇总", "最优路线明细", "成分校核", "错误与警告"} <= set(exported.sheetnames)
+    assert {"批量计算汇总", "最优路线明细", "成分校核", "错误与警告", "规则参数"} <= set(exported.sheetnames)
 
 
 def test_template_download_api_returns_parseable_standard_template():
@@ -634,9 +676,10 @@ def test_download_template_uses_requested_element_scope():
     assert "N回收率" not in endpoint_headers
     assert "N" not in alloy_headers
     assert "C/P/S 按上限控制" in rules_text
-    assert "Si<=0.05 时只做低杂质控制、按上限处理" in rules_text
-    assert "其余元素单值目标按等值控制" in rules_text
-    assert "Ti 只在下限侧加一次该余量" not in rules_text
+    assert "空值或 0 表示不约束" in rules_text
+    assert "Si<=低硅阈值时只做低杂质控制、按上限处理" in rules_text
+    assert "其余元素单值目标按精确值控制" in rules_text
+    assert "Ti 单值=目标+余量" in rules_text
     assert "C目标-余量" in rules_text
     assert "铝块按现场单独录入" in rules_text
     assert "26MnB5 的 Si 回收率若录成 0" in rules_text

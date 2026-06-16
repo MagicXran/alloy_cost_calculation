@@ -26,7 +26,6 @@ if str(ROOT) not in sys.path:
 from app.batch_template import (
     FIELD_CONFIRMED_RECOVERY_OVERRIDES,
     FIXED_RECOVERY_RATES,
-    target_bounds_from_single_value,
 )
 from app.core import (
     build_linear_model,
@@ -37,6 +36,7 @@ from app.core import (
     effective_bounds,
     evaluate_plan_against_rules,
 )
+from app.rules_engine import compile_rule_view
 from app.solvers import get_solver
 
 
@@ -177,6 +177,18 @@ def load_process_rules() -> dict[str, Any]:
     return config.get("process_rules") or {}
 
 
+def process_rules_snapshot_text(rules: dict[str, Any]) -> str:
+    thresholds = rules.get("trace_alloy_thresholds") or {}
+    return (
+        f"C余量={rules.get('carbon_target_margin')}; "
+        f"禁硅={rules.get('disable_silicon_alloys_si_max')}; "
+        f"低硅上限阈值={rules.get('single_target_si_upper_only_max')}; "
+        f"Ti余量={rules.get('ti_safety_addition')}; "
+        f"Ni/Cu/Mo/Sb/B={thresholds.get('Ni')}/{thresholds.get('Cu')}/{thresholds.get('Mo')}/{thresholds.get('Sb')}/{thresholds.get('B')}; "
+        f"P/S禁投={rules.get('phosphorus_alloy_max')}/{rules.get('sulfur_alloy_max')}"
+    )
+
+
 def source_aluminum(cost_sheet, row: int) -> AluminumMatch:
     value = optional_float(cost_sheet[f"{ALUMINUM_SOURCE_COLUMN}{row}"].value)
     warning = "" if value is not None else f"1.合金成本!{ALUMINUM_SOURCE_COLUMN}{row} 铝块为空或非数字"
@@ -248,7 +260,7 @@ def build_row_config(
     alloys: list[dict[str, Any]],
     process_rules: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, float | None], list[str]]:
-    target: dict[str, dict[str, float]] = {}
+    target_spec: dict[str, dict[str, float | str | None]] = {}
     raw_targets: dict[str, float | None] = {}
     for element, column in TARGET_COLUMNS.items():
         if element in IGNORED_TARGET_ELEMENTS:
@@ -257,9 +269,7 @@ def build_row_config(
         raw_targets[element] = value
         if value is None:
             continue
-        bounds = target_bounds_from_single_value(element, value, process_rules)
-        if bounds:
-            target[element] = bounds
+        target_spec[element] = {"mode": "single", "value": value}
 
     recovery: dict[str, float] = {}
     for element, column in RECOVERY_COLUMNS.items():
@@ -273,22 +283,33 @@ def build_row_config(
         "C": optional_float(param_sheet[f"I{row}"].value) or 0.0,
         "Mn": optional_float(param_sheet[f"J{row}"].value) or 0.0,
     }
-    used_elements = set(target)
+    used_elements = set(target_spec)
     for alloy in alloys:
         used_elements.update(alloy["composition"])
     for element in used_elements:
         residual.setdefault(element, 0.0)
         recovery.setdefault(element, 1.0)
 
+    preview_config = {
+        "target_spec": target_spec,
+        "process_rules": process_rules,
+        "control_targets": {"enabled": False, "margin": 0, "elements": {}},
+        "safety_margins": {element: {"low": 0, "high": 0} for element in target_spec},
+        "alloys": alloys,
+    }
+    preview_view = compile_rule_view(preview_config)
+    compiled_target = preview_view.as_legacy_target()
+
     config = {
         "heat_weight_t": 150,
         "steel_weight_kg": 1000,
         "ignored_elements": sorted(IGNORED_TARGET_ELEMENTS),
-        "target": target,
+        "target_spec": preview_view.target_spec,
+        "target": compiled_target,
         "raw_targets": raw_targets,
         "residual": residual,
         "recovery_rates": recovery,
-        "safety_margins": {element: {"low": 0, "high": 0} for element in target},
+        "safety_margins": {element: {"low": 0, "high": 0} for element in target_spec},
         "control_targets": {"enabled": False, "margin": 0, "elements": {}},
         "process_rules": process_rules,
         "alloys": alloys,
@@ -689,7 +710,7 @@ def compute_rows(source_workbook_path: Path = SOURCE_WORKBOOK) -> tuple[list[dic
     }
     summary["cost_delta_total"] = summary["new_cost_total"] - summary["old_cost_total"]
     summary["kg_delta_total"] = summary["new_kg_total"] - summary["old_kg_total"]
-    return rows, details, {"summary": summary, "alloys": alloys, "source_workbook": source_workbook_path, "source_rows": rows_to_compute}
+    return rows, details, {"summary": summary, "alloys": alloys, "source_workbook": source_workbook_path, "source_rows": rows_to_compute, "process_rules": process_rules}
 
 
 def result_headers(alloys: list[dict[str, Any]]) -> list[str]:
@@ -783,12 +804,13 @@ def write_workbook(rows: list[dict[str, Any]], details: list[dict[str, Any]], me
             f"{source_workbook.name}!1.合金成本 第{source_row_range}行, AB4:AU4单价, AH列铝块；炼钢参数表 第{source_row_range}行",
             "本次不读取外部铝耗表或合金价格表，所有输入来自同一个 workbook。",
         ),
-        ("LP口径", "当前 app.core + process_rules + target_bounds_from_single_value", "铝块 manual_aluminum，不参与LP自动优化；新方案固定使用同源 AH 铝块值计入总耗和成本。"),
+        ("LP口径", "当前 app.core + rules_engine + target_spec", "铝块 manual_aluminum，不参与LP自动优化；新方案固定使用同源 AH 铝块值计入总耗和成本。"),
         (
             "行数",
             summary["total"],
             f"数据行 {source_row_range}；LP可行 {summary['ok']}；不可行 {summary['infeasible']}；Excel原结果错误 {summary['excel_result_errors']}；批准规则下 Excel 可行 {summary['excel_rule_ok']}、不可行 {summary['excel_rule_ng']}、输入异常 {summary['excel_rule_input_error']}；AH铝耗缺失 {summary['missing_aluminum']}。",
         ),
+        ("规则参数", process_rules_snapshot_text(meta["process_rules"]), "本次回算先读取 config.json 默认规则，再按该快照统一编译目标语义、禁投逻辑和元素边界。"),
         (
             "成本累计",
             round(summary["new_cost_total"], 6),

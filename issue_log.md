@@ -23,6 +23,14 @@
 
 ## 已记录问题
 
+### 2026-06-16 - 规则语义分散会让 Ti、低目标不投和模板覆盖在不同入口被绕过去
+
+- 问题现象：同一套业务规则分散在 `target_bounds_from_single_value()`、`effective_bounds()`、`nominal_target_value()`、`process_rule_alloy_upper_bound()`、batch 模板解析和单源回算脚本多个入口，结果是 `Ti +0.005` 在单值目标路径被绕掉，`Ni/Cu/Mo/Sb/B` 低目标不投也可能因为元素 bounds 被清空而丢失原始目标语义；模板 `07_工艺规则参数` 的数值也没有真正成为所有入口的统一事实源。
+- 原因：历史上把“目标语义解释”“工艺规则修正”“禁投判断”“求解器边界”混在多个函数里各自推断，缺少一个唯一规则入口；单值目标先被压成 `target[min,max]` 后，很多原始业务语义已经丢失，后续入口只能猜。
+- 修复办法：新增 `app/rules_engine.py`，实现 `target_spec -> RuleEngine -> CompiledRuleView` 的统一规则编译链；所有 magic number 默认值改为从 `config.json` 读取，batch 模板 `07_工艺规则参数` 先覆盖默认值，再统一编译目标语义、禁投逻辑和元素边界；`effective_bounds()`、`process_rule_alloy_upper_bound()`、`evaluate_plan_against_rules()`、回算脚本全部改为只读 `CompiledRuleView`。`Ti` 单值目标改为 `Ti = 目标值 + 0.005`，空值或 `0` 的元素目标统一视为“不约束”。
+- 验证方式：新增 `tests/test_rule_engine.py` 覆盖 `Ti(single/range)`、空/0 忽略、低目标不投；`tests/test_batch_template.py` 更新为断言 `target_spec` 和最终编译边界；`tests/test_backend_optimizer.py`、全量 `pytest`、`node --test tests/ui_static.test.js` 全部通过；重新运行 `.venv-win\Scripts\python.exe tools\recalculate_lp_actual_aluminum.py` 后，正确版单源回算为 `328` 行 LP 全部可行，批准规则下旧 Excel 可行 `292` 行、不可行 `35` 行、输入异常 `1` 行。
+- 防复发要求：以后新增、删除或调整规则时，只允许新增/调整规则插件和模板参数，不允许再把业务语义散落回 `core`、`batch_template`、回算脚本各自手写；任何入口只要需要“当前规则”，都必须先拿 `CompiledRuleView`，不能自己从 `target[min,max]` 反推。
+
 ### 2026-06-15 - 高 Si 和常规单值目标不能只按下限，必须按等值目标约束
 
 - 问题现象：规则澄清后，`Si目标>0.05` 以及 Mn/V/Nb/Ti/Als/Alt/Cr/Ni/Cu/Mo/B/Sb 等常规单值目标如果仍只生成下限，会允许最终成分高于目标值；这不符合“达到目标值就是必须等于目标值、没有安全余量”的业务口径。

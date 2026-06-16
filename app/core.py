@@ -10,6 +10,7 @@ import copy
 from dataclasses import dataclass
 from typing import Any
 
+from app.rules_engine import compile_rule_view, default_process_rules, resolve_process_rules
 from app.solvers.base import RawSolution, Solver
 
 
@@ -17,17 +18,7 @@ BASE_ELEMENTS = ["C", "Si", "Mn", "Cr", "P", "S"]
 ELEMENTS = BASE_ELEMENTS
 EPS = 1e-8
 MAX_PRICE_PER_TON = 1_000_000
-DEFAULT_PROCESS_RULES = {
-    "enabled": True,
-    "carbon_target_margin": 0.005,
-    "disable_silicon_alloys_si_max": 0.04,
-    "single_target_si_upper_only_max": 0.05,
-    "manual_aluminum": True,
-    "ti_safety_addition": 0.005,
-    "trace_alloy_thresholds": {"Ni": 0.02, "Cu": 0.02, "Mo": 0.02, "Sb": 0.02, "B": 0.0002},
-    "phosphorus_alloy_max": 0.040,
-    "sulfur_alloy_max": 0.030,
-}
+DEFAULT_PROCESS_RULES = default_process_rules()
 
 
 class OptimizerError(ValueError):
@@ -79,51 +70,21 @@ def clone_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def effective_bounds(config: dict[str, Any], element: str) -> dict[str, float | None]:
-    """计算安全余量后的成分边界。"""
+    """返回统一规则视图中编译好的元素边界。"""
 
-    control = control_target_for(config, element)
-    if control is not None:
-        return apply_process_rules_to_bounds(config, element, {"min": None, "max": control})
-
-    target = (config.get("target") or {}).get(element) or {}
-    margin = (config.get("safety_margins") or {}).get(element) or {"low": 0, "high": 0}
-    bounds = {
-        "min": None if "min" not in target else float(target["min"]) + float(margin.get("low") or 0),
-        "max": None if "max" not in target else float(target["max"]) - float(margin.get("high") or 0),
-    }
-    return apply_process_rules_to_bounds(config, element, bounds)
+    view = compile_rule_view(config)
+    bounds = view.compiled_bounds.get(element) or {}
+    return {"min": bounds.get("min"), "max": bounds.get("max")}
 
 
 def apply_process_rules_to_bounds(config: dict[str, Any], element: str, bounds: dict[str, float | None]) -> dict[str, float | None]:
-    """把现场确认的工艺规则折算成求解器可理解的元素边界。"""
+    """兼容旧调用方；现已由规则引擎统一编译。"""
 
-    if not process_rules_enabled(config):
-        return bounds
-
-    adjusted = dict(bounds)
-    rules = process_rules(config)
-    target = nominal_target_value(config, element)
-
-    if element == "C" and target is not None and adjusted["max"] is not None:
-        adjusted["max"] = min(adjusted["max"], target - float(rules["carbon_target_margin"]))
-
-    if element == "Ti" and target is not None and not is_exact_bound(adjusted):
-        addition = float(rules["ti_safety_addition"])
-        if adjusted["min"] is not None:
-            adjusted["min"] += addition
-
-    if element in {"Als", "Alt"} and rules["manual_aluminum"]:
-        return {"min": None, "max": None}
-
-    threshold = (rules["trace_alloy_thresholds"] or {}).get(element)
-    if threshold is not None and target is not None and target <= float(threshold) + EPS:
-        return {"min": None, "max": None}
-
-    return adjusted
+    return effective_bounds(config, element)
 
 
 def is_exact_bound(bounds: dict[str, float | None]) -> bool:
-    """单值目标已被解析成等值时，不再叠加工艺安全余量。"""
+    """保留给旧测试/调用方；规则引擎实现里不再依赖该判断。"""
 
     return bounds["min"] is not None and bounds["max"] is not None and abs(bounds["min"] - bounds["max"]) <= EPS
 
@@ -146,18 +107,7 @@ def control_target_for(config: dict[str, Any], element: str) -> float | None:
 def process_rules(config: dict[str, Any]) -> dict[str, Any]:
     """返回启用的工艺规则配置；未显式配置时使用现场确认的新 LP 规则。"""
 
-    configured = config.get("process_rules")
-    if configured is False:
-        return {**DEFAULT_PROCESS_RULES, "enabled": False}
-    if not isinstance(configured, dict):
-        return dict(DEFAULT_PROCESS_RULES)
-    merged = dict(DEFAULT_PROCESS_RULES)
-    merged.update(configured)
-    if isinstance(configured.get("trace_alloy_thresholds"), dict):
-        thresholds = dict(DEFAULT_PROCESS_RULES["trace_alloy_thresholds"])
-        thresholds.update(configured["trace_alloy_thresholds"])
-        merged["trace_alloy_thresholds"] = thresholds
-    return merged
+    return resolve_process_rules(config)
 
 
 def process_rules_enabled(config: dict[str, Any]) -> bool:
@@ -169,17 +119,7 @@ def process_rules_enabled(config: dict[str, Any]) -> bool:
 def nominal_target_value(config: dict[str, Any], element: str) -> float | None:
     """返回元素的现场目标值，用于判断阈值规则，不叠加安全余量。"""
 
-    control = config.get("control_targets") or {}
-    element_config = (control.get("elements") or {}).get(element) or {}
-    if control.get("enabled") is not False and element_config.get("enabled") is True and "value" in element_config:
-        return float(element_config["value"])
-
-    target = (config.get("target") or {}).get(element) or {}
-    if "max" in target:
-        return float(target["max"])
-    if "min" in target:
-        return float(target["min"])
-    return None
+    return compile_rule_view(config).nominal_targets.get(element)
 
 
 def alloy_coeff(alloy: dict[str, Any], element: str, config: dict[str, Any]) -> float:
@@ -242,15 +182,35 @@ def validate_config(config: dict[str, Any]) -> None:
             if value > 0.1:
                 errors.append(f"{element} 安全余量过大，确认是否单位错误")
 
-    for element, spec in (config.get("target") or {}).items():
-        for bound in ("min", "max"):
-            if bound not in (spec or {}):
-                continue
-            value = number_or_throw(spec[bound], f"target.{element}.{bound}")
+    target_spec = compile_rule_view(config, force_recompute=True).target_spec
+    for element, spec in target_spec.items():
+        mode = spec.get("mode")
+        if mode == "single" and spec.get("value") is not None:
+            value = number_or_throw(spec["value"], f"target_spec.{element}.value")
             if value < 0 or value > 10:
                 errors.append(f"{element} 目标成分超过 0~10%，确认是否单位错误")
-        if "min" in spec and "max" in spec and float(spec["min"]) > float(spec["max"]):
-            errors.append(f"{element} 目标下限不能大于上限")
+        if mode == "range":
+            for bound in ("min", "max"):
+                if spec.get(bound) is None:
+                    continue
+                value = number_or_throw(spec[bound], f"target_spec.{element}.{bound}")
+                if value < 0 or value > 10:
+                    errors.append(f"{element} 目标成分超过 0~10%，确认是否单位错误")
+            if spec.get("min") is not None and spec.get("max") is not None and float(spec["min"]) > float(spec["max"]):
+                errors.append(f"{element} 目标下限不能大于上限")
+
+    resolved_rules = process_rules(config)
+    for key in ("carbon_target_margin", "disable_silicon_alloys_si_max", "single_target_si_upper_only_max", "ti_safety_addition", "phosphorus_alloy_max", "sulfur_alloy_max"):
+        value = number_or_throw(resolved_rules.get(key), f"process_rules.{key}")
+        if value < 0 or value > 10:
+            errors.append(f"{key} 超过合理范围，确认是否单位错误")
+    for element, value in (resolved_rules.get("trace_alloy_thresholds") or {}).items():
+        number = number_or_throw(value, f"process_rules.trace_alloy_thresholds.{element}")
+        if number < 0 or number > 10:
+            errors.append(f"{element} 不投阈值超过合理范围，确认是否单位错误")
+
+    view = compile_rule_view(config)
+    for element in set(view.compiled_bounds) | set(target_spec):
         bounds = effective_bounds(config, element)
         if bounds["min"] is not None and bounds["max"] is not None and bounds["min"] > bounds["max"]:
             errors.append(f"{element} 安全余量导致有效上下限交叉")
@@ -297,7 +257,7 @@ def precheck_residual_impurities(config: dict[str, Any]) -> None:
 
     for element in ("P", "S"):
         residual = float((config.get("residual") or {}).get(element) or 0)
-        max_value = ((config.get("target") or {}).get(element) or {}).get("max")
+        max_value = effective_bounds(config, element).get("max")
         if max_value is not None and residual > float(max_value) + EPS:
             raise OptimizerError(
                 f"当前{element}={format_number(residual, 4)}%已超过目标上限{format_number(float(max_value), 4)}%，"
@@ -310,7 +270,7 @@ def build_linear_model(config: dict[str, Any], alloys: list[dict[str, Any]], fix
 
     constraints: list[dict[str, Any]] = []
     residual = config.get("residual") or {}
-    for element in active_elements(config, alloys):
+    for element in compile_rule_view(config).compiled_bounds:
         bounds = effective_bounds(config, element)
         coeff = [alloy_coeff(alloy, element, config) for alloy in alloys]
         if bounds["max"] is not None:
@@ -357,26 +317,8 @@ def process_rule_alloy_upper_bound(config: dict[str, Any], alloy: dict[str, Any]
 
     if not process_rules_enabled(config):
         return upper
-
-    rules = process_rules(config)
     name = str(alloy.get("name") or "")
-    si_target = nominal_target_value(config, "Si")
-    if si_target is not None and si_target <= float(rules["disable_silicon_alloys_si_max"]) + EPS:
-        if alloy_name_matches(name, ("硅锰", "硅铁")):
-            return 0.0
-
-    if rules["manual_aluminum"] and alloy_name_matches(name, ("铝块", "铝粒", "铝锭", "铝线")):
-        return 0.0
-
-    if should_disable_trace_alloy(config, alloy, rules):
-        return 0.0
-
-    p_target = nominal_target_value(config, "P")
-    if p_target is not None and p_target <= float(rules["phosphorus_alloy_max"]) + EPS and alloy_name_matches(name, ("磷铁",)):
-        return 0.0
-
-    s_target = nominal_target_value(config, "S")
-    if s_target is not None and s_target <= float(rules["sulfur_alloy_max"]) + EPS and alloy_name_matches(name, ("硫铁",)):
+    if name in compile_rule_view(config).disabled_alloys:
         return 0.0
 
     return upper
@@ -385,21 +327,7 @@ def process_rule_alloy_upper_bound(config: dict[str, Any], alloy: dict[str, Any]
 def should_disable_trace_alloy(config: dict[str, Any], alloy: dict[str, Any], rules: dict[str, Any]) -> bool:
     """Ni/Cu/Mo/Sb/B 低目标时，不允许投对应纯合金。"""
 
-    aliases = {
-        "Ni": ("镍",),
-        "Cu": ("铜",),
-        "Mo": ("钼",),
-        "Sb": ("锑",),
-        "B": ("硼",),
-    }
-    name = str(alloy.get("name") or "")
-    for element, threshold in (rules["trace_alloy_thresholds"] or {}).items():
-        target = nominal_target_value(config, element)
-        if target is None or target > float(threshold) + EPS:
-            continue
-        if alloy_name_matches(name, aliases.get(element, ())):
-            return True
-    return False
+    return str((alloy or {}).get("name") or "") in compile_rule_view(config).disabled_alloys
 
 
 def alloy_name_matches(name: str, aliases: tuple[str, ...]) -> bool:
@@ -602,7 +530,7 @@ def chemistry_checks(config: dict[str, Any], chemistry: dict[str, float]) -> lis
     """检查每个元素是否落在有效成分边界内。"""
 
     checks = []
-    for element in active_elements(config):
+    for element, bounds in compile_rule_view(config).compiled_bounds.items():
         bounds = effective_bounds(config, element)
         value = chemistry.get(element) or 0
         above_min = bounds["min"] is None or value >= bounds["min"] - 1e-7
@@ -654,7 +582,7 @@ def diagnose_infeasible(config: dict[str, Any], alloys: list[dict[str, Any]], so
     """给出简单可解释的无可行解诊断。"""
 
     diagnostics: list[str] = []
-    for element in active_elements(config, alloys):
+    for element in compile_rule_view(config).compiled_bounds:
         bounds = effective_bounds(config, element)
         residual = float((config.get("residual") or {}).get(element) or 0)
         max_reach = residual + sum(
@@ -680,7 +608,7 @@ def diagnose_coupled_element_limits(config: dict[str, Any], alloys: list[dict[st
 
     diagnostics: list[str] = []
     base_model = build_linear_model(config, alloys).as_dict()
-    for element in active_elements(config, alloys):
+    for element in compile_rule_view(config).compiled_bounds:
         bounds = effective_bounds(config, element)
         if bounds["min"] is None and bounds["max"] is None:
             continue

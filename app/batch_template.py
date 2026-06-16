@@ -11,7 +11,8 @@ import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils.exceptions import InvalidFileException
 
-from app.core import DEFAULT_PROCESS_RULES, OptimizerError, solve_alloy_cost
+from app.core import OptimizerError, solve_alloy_cost
+from app.rules_engine import compile_rule_view, default_process_rules as load_default_process_rules, rule_template_allowed_keys, rule_template_rows
 from app.solvers import get_solver
 
 
@@ -21,8 +22,6 @@ TEMPLATE_ELEMENTS = ["C", "Si", "Mn", "P", "S", "V", "Nb", "Ti", "Als", "Alt", "
 ERROR_FIELD_ELEMENTS = ["P", "S"] + [element for element in TEMPLATE_ELEMENTS if element not in {"P", "S"}]
 TARGET_IGNORED_ELEMENTS = {"Ca"}
 FIXED_RECOVERY_RATES = {"Als": 0.15, "Alt": 0.15}
-SINGLE_TARGET_UPPER_ONLY_ELEMENTS = {"C", "P", "S"}
-LOW_TARGET_NO_ADDITION_THRESHOLDS = {"Ni": 0.02, "Cu": 0.02, "Mo": 0.02, "Sb": 0.02, "B": 0.0002}
 FIELD_CONFIRMED_RECOVERY_OVERRIDES = {("26MNB5", "Si"): 0.8}
 BUSINESS_SHEETS = [
     "01_批量任务",
@@ -41,21 +40,6 @@ REQUIRED_HEADERS = {
 }
 RULES_SHEET = "07_工艺规则参数"
 RULES_HEADERS = ["规则项", "参数键", "值", "说明"]
-RULES_TEMPLATE_ROWS = [
-    ("规则总开关", "enabled", True, "是否启用现场确认的 8 条工艺规则；是/否。"),
-    ("控碳余量", "carbon_target_margin", 0.005, "C 上限按 目标值-该余量 控制。"),
-    ("禁硅阈值", "disable_silicon_alloys_si_max", 0.04, "Si 目标 <= 该阈值时禁用硅锰/硅铁。"),
-    ("低硅上限语义阈值", "single_target_si_upper_only_max", 0.05, "Si 目标 <= 该阈值时只做低杂质控制，不要求补到目标值。"),
-    ("铝块单独录入", "manual_aluminum", True, "铝块不参与 LP 自动优化，由现场单独录入。"),
-    ("Ti 安全余量", "ti_safety_addition", 0.005, "Ti 只在下限侧加一次该余量。"),
-    ("Ni 禁投阈值", "trace_alloy_thresholds.Ni", 0.02, "Ni 目标 <= 该阈值时不投镍板。"),
-    ("Cu 禁投阈值", "trace_alloy_thresholds.Cu", 0.02, "Cu 目标 <= 该阈值时不投铜板。"),
-    ("Mo 禁投阈值", "trace_alloy_thresholds.Mo", 0.02, "Mo 目标 <= 该阈值时不投钼铁。"),
-    ("Sb 禁投阈值", "trace_alloy_thresholds.Sb", 0.02, "Sb 目标 <= 该阈值时不投锑锭。"),
-    ("B 禁投阈值", "trace_alloy_thresholds.B", 0.0002, "B 目标 <= 该阈值时不投硼铁。"),
-    ("磷铁禁投阈值", "phosphorus_alloy_max", 0.04, "P 目标 <= 该阈值时不投磷铁。"),
-    ("硫铁禁投阈值", "sulfur_alloy_max", 0.03, "S 目标 <= 该阈值时不投硫铁。"),
-]
 ALLOY_METADATA_HEADERS = set(REQUIRED_HEADERS["04_合金成分库"]) | {"投料方式", "投加顺序", "备注"}
 FEED_MODES = {"连续", "整袋"}
 BATCH_RESULTS: dict[str, dict] = {}
@@ -64,7 +48,7 @@ BATCH_RESULTS: dict[str, dict] = {}
 def default_process_rules() -> dict:
     """返回模板与批量链路使用的默认工艺规则。"""
 
-    return deepcopy(DEFAULT_PROCESS_RULES)
+    return load_default_process_rules()
 
 
 def rule_template_value(process_rules: dict, key: str):
@@ -159,8 +143,8 @@ def generate_template_workbook(process_rules: dict | None = None) -> bytes:
             ["模板版本", TEMPLATE_VERSION],
             ["填写流程", "下载模板 -> 填业务数据 -> 上传预检 -> 预检通过后批量计算 -> 导出结果"],
             ["单位规则", "成分按百分数数值填写，例如 0.23 表示 0.23%；合金品位 65.66 表示 65.66%。"],
-            ["外部单值规则", "目标成分表使用 元素目标 单值列：C/P/S 按上限控制；Si<=0.05 时只做低杂质控制、按上限处理；Ni/Cu/Mo/Sb<=0.02、B<=0.0002 时可留空或直接视为不投；其余元素单值目标按等值控制，即下限=上限=目标值，不额外叠加安全余量。旧的 元素下限/元素上限 上传列仍兼容。"],
-            ["现场工艺规则", "以 07_工艺规则参数 sheet 为准：当前批准规则只有 C目标-余量、Si<=阈值禁硅、金属锰兜底、铝块按现场单独录入、Ti 下限+余量、Ni/Cu/Mo/Sb/B 低目标禁投、P/S 低目标禁投磷硫铁。"],
+            ["外部单值规则", "目标成分表使用 元素目标 单值列：空值或 0 表示不约束；C/P/S 按上限控制；Si<=低硅阈值时只做低杂质控制、按上限处理；Ni/Cu/Mo/Sb<=对应阈值、B<=对应阈值时可留空或直接视为不投；其余元素单值目标按精确值控制。旧的 元素下限/元素上限 上传列仍兼容。"],
+            ["现场工艺规则", "以 07_工艺规则参数 sheet 为准：当前批准规则包括 C目标-余量、Si<=阈值禁硅、金属锰兜底、铝块按现场单独录入、Ti 单值=目标+余量、Ti 区间下限+余量、Ni/Cu/Mo/Sb/B 低目标禁投、P/S 低目标禁投磷硫铁。"],
             ["合金用量公式", "kg/t = (目标成分 - 有效终点成分) / 合金品位 / 回收率 * 1000；当前批量链路只使用 C/Mn 终点扣减，V/Nb/Ti/Cr 等不做终点残余扣减；26MnB5 的 Si 回收率若录成 0 会按现场确认值 0.8 修正。"],
             ["标准元素", "标准模板仅保留 C, Si, Mn, P, S, V, Nb, Ti, Als, Alt, Ca, Cr, Ni, Cu, Mo, B, Sb；旧模板里的 N 上传时会被忽略。"],
             ["P/S 规则", "P/S 通常只填写上限；转炉终点已超过上限时任务直接失败。"],
@@ -179,7 +163,7 @@ def generate_template_workbook(process_rules: dict | None = None) -> bytes:
             RULES_HEADERS,
             *[
                 [label, key, rule_template_value(template_rules, key), note]
-                for label, key, _, note in RULES_TEMPLATE_ROWS
+                for label, key, note in rule_template_rows()
             ],
         ],
         {"A": 18, "B": 28, "C": 14, "D": 70},
@@ -415,9 +399,18 @@ def build_parsed_template(rows_by_sheet: dict[str, list[dict]], errors: list[dic
             errors.append(make_issue("04_合金成分库", None, "启用", "NO_ENABLED_ALLOYS", "没有可参与计算的启用合金。", "请至少启用一种合金并配置价格。"))
             continue
 
-        target_spec = deepcopy(target["target"])
+        target_spec = deepcopy(target["targetSpec"])
         residual = build_residual(target_spec, endpoint["residual"], config_alloys)
         recovery_rates = build_recovery_rates(target_spec, endpoint["recoveryRates"], endpoint.get("row"), config_alloys, errors)
+        preview_config = {
+            "target_spec": deepcopy(target_spec),
+            "process_rules": deepcopy(process_rules),
+            "control_targets": {"enabled": False, "margin": 0, "elements": {}},
+            "safety_margins": {element: {"low": 0, "high": 0} for element in target_spec},
+            "alloys": config_alloys,
+        }
+        preview_view = compile_rule_view(preview_config)
+        compiled_target = preview_view.as_legacy_target()
         parsed_tasks.append(
             {
                 "taskId": task["taskId"],
@@ -429,7 +422,8 @@ def build_parsed_template(rows_by_sheet: dict[str, list[dict]], errors: list[dic
                     "heat_weight_t": task["heatWeightT"],
                     "steel_weight_kg": 1000,
                     "ignored_elements": sorted(IGNORED_ELEMENTS),
-                    "target": target_spec,
+                    "target_spec": deepcopy(preview_view.target_spec),
+                    "target": compiled_target,
                     "residual": residual,
                     "recovery_rates": recovery_rates,
                     "safety_margins": {element: {"low": 0, "high": 0} for element in target_spec},
@@ -453,7 +447,7 @@ def parse_process_rules_rows(rows: list[dict], errors: list[dict]) -> dict:
     if not rows:
         return rules
 
-    allowed_keys = {key for _, key, _, _ in RULES_TEMPLATE_ROWS}
+    allowed_keys = rule_template_allowed_keys()
     seen: set[str] = set()
     for row in rows:
         key = optional_text(row.get("参数键"))
@@ -478,7 +472,7 @@ def parse_process_rules_rows(rows: list[dict], errors: list[dict]) -> dict:
             rules[key] = parsed
             continue
 
-        maximum = 10 if key == "disable_silicon_alloys_si_max" else 1.2
+        maximum = 10 if key in {"disable_silicon_alloys_si_max", "single_target_si_upper_only_max", "carbon_target_margin", "ti_safety_addition", "phosphorus_alloy_max", "sulfur_alloy_max"} else 1.2
         parsed_number = optional_number(raw_value, RULES_SHEET, row["_row"], "值", errors, minimum=0, maximum=maximum, allow_zero=True)
         if parsed_number is None:
             continue
@@ -559,6 +553,7 @@ def validate_prechecked_config(config: dict, task_index: int) -> None:
 
     expected_types = {
         "target": dict,
+        "target_spec": dict,
         "residual": dict,
         "recovery_rates": dict,
         "safety_margins": dict,
@@ -584,11 +579,25 @@ def export_batch_result(batch_result: dict) -> bytes:
     details = workbook.create_sheet("最优路线明细")
     chemistry = workbook.create_sheet("成分校核")
     issues = workbook.create_sheet("错误与警告")
+    rule_sheet = workbook.create_sheet("规则参数")
 
     summary.append(["任务编号", "牌号", "厚度mm", "状态", "最优吨钢成本", "炉次成本", "失败原因"])
     details.append(["任务编号", "路线序号", "合金", "kg/t", "炉次kg", "袋数", "成本贡献", "投料方式"])
     chemistry.append(["任务编号", "元素", "最终值", "下限", "上限", "是否合格"])
     issues.append(["任务编号", "类型", "sheet", "行号", "字段", "code", "message", "suggestion"])
+    rule_sheet.append(["参数键", "最终值"])
+
+    rule_source = None
+    for item in batch_result.get("results") or []:
+        candidate = ((item.get("input") or {}).get("config") or {}).get("process_rules")
+        if isinstance(candidate, dict):
+            rule_source = candidate
+            break
+    if rule_source is None and isinstance(batch_result.get("processRules"), dict):
+        rule_source = batch_result["processRules"]
+    if isinstance(rule_source, dict):
+        for label, key, _ in rule_template_rows():
+            rule_sheet.append([key, rule_template_value(rule_source, key)])
 
     for item in batch_result.get("results") or []:
         task = item["input"]
@@ -648,7 +657,7 @@ def parse_task_rows(rows: list[dict], errors: list[dict]) -> list[dict]:
 def parse_target_rows(rows: list[dict], errors: list[dict], process_rules: dict | None = None) -> list[dict]:
     targets = []
     for row in rows:
-        target: dict[str, dict] = {}
+        target_spec: dict[str, dict[str, float | str | None]] = {}
         single_target_elements: set[str] = set()
         for header, value in row.items():
             parsed = element_header(header, ("目标",))
@@ -660,9 +669,7 @@ def parse_target_rows(rows: list[dict], errors: list[dict], process_rules: dict 
             number = optional_number(value, "02_目标成分上下限", row["_row"], header, errors, minimum=0, maximum=10)
             if number is None:
                 continue
-            bounds = target_bounds_from_single_value(element, number, process_rules)
-            if bounds:
-                target[element] = bounds
+            target_spec[element] = {"mode": "single", "value": number}
             single_target_elements.add(element)
         for header, value in row.items():
             parsed = element_header(header, ("下限", "上限"))
@@ -688,11 +695,22 @@ def parse_target_rows(rows: list[dict], errors: list[dict], process_rules: dict 
             if number is None:
                 continue
             key = "min" if bound_name == "下限" else "max"
-            target.setdefault(element, {})[key] = number
-        for element, spec in target.items():
-            if "min" in spec and "max" in spec and spec["min"] > spec["max"]:
+            spec = target_spec.setdefault(element, {"mode": "range", "min": None, "max": None})
+            spec["mode"] = "range"
+            spec[key] = number
+        for element, spec in target_spec.items():
+            if spec.get("mode") != "range":
+                continue
+            if spec.get("min") not in (None, 0) and spec.get("max") not in (None, 0) and float(spec["min"]) > float(spec["max"]):
                 errors.append(make_issue("02_目标成分上下限", row["_row"], element, "TARGET_RANGE_CROSSED", f"{element} 下限大于上限。", "请修正目标成分上下限。"))
-        targets.append({**business_key(row, "02_目标成分上下限", errors), "target": target})
+        preview_config = {
+            "target_spec": deepcopy(target_spec),
+            "process_rules": deepcopy(process_rules) if isinstance(process_rules, dict) else default_process_rules(),
+            "control_targets": {"enabled": False, "margin": 0, "elements": {}},
+            "safety_margins": {},
+            "alloys": [],
+        }
+        targets.append({**business_key(row, "02_目标成分上下限", errors), "targetSpec": target_spec, "target": compile_rule_view(preview_config).as_legacy_target()})
     return targets
 
 
@@ -720,16 +738,16 @@ def validate_unique_steelmaking_grade(records: list[dict], sheet: str, errors: l
 def target_bounds_from_single_value(element: str, value: float, process_rules: dict | None = None) -> dict[str, float]:
     """把外部单值目标转换成优化器需要的上下限。"""
 
-    target = normalized_float(value)
-    threshold = LOW_TARGET_NO_ADDITION_THRESHOLDS.get(element)
-    if threshold is not None and target <= threshold:
-        return {}
-    if element in SINGLE_TARGET_UPPER_ONLY_ELEMENTS:
-        return {"max": target}
-    si_upper_only_max = float((process_rules or {}).get("single_target_si_upper_only_max") or default_process_rules()["single_target_si_upper_only_max"])
-    if element == "Si" and target <= si_upper_only_max:
-        return {"max": target}
-    return {"min": target, "max": target}
+    preview = compile_rule_view(
+        {
+            "target_spec": {element: {"mode": "single", "value": normalized_float(value)}},
+            "process_rules": deepcopy(process_rules) if isinstance(process_rules, dict) else default_process_rules(),
+            "control_targets": {"enabled": False, "margin": 0, "elements": {}},
+            "safety_margins": {},
+            "alloys": [],
+        }
+    )
+    return preview.as_legacy_target().get(element, {})
 
 
 def single_target_values_to_bounds(values_by_element: dict[str, float], process_rules: dict | None = None) -> dict[str, dict[str, float]]:
