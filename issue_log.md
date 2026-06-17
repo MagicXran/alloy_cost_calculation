@@ -23,6 +23,14 @@
 
 ## 已记录问题
 
+### 2026-06-17 - 单源回算必须把成分结果导出为独立 sheet
+
+- 问题现象：`tools/recalculate_lp_actual_aluminum.py` 的主对比 sheet 已经有 `Excel原方案成分校核` 和 `新方案成分校核` 文本列，但这些列把所有元素压在一个字符串里，无法直接筛选某个元素，也不方便按 `Excel行号 + 元素` 逐条复核目标值、边界和新旧成分差。
+- 原因：早期输出设计强调“一个 sheet 足够进行对比”，所以把成分校核作为行级说明字段塞进主表；当用户要求“测试结果中把成分结果导出来都整理一个 sheet 中”时，原结构缺少可审计的成分明细表。
+- 修复办法：回算脚本在计算阶段保留 `old_chemistry`、`new_chemistry`、`终点成分` 和 `成分边界`，写 workbook 时新增 `成分结果` sheet，按 `Excel行号 + 元素` 展开 `目标值`、`约束下限/上限`、`终点成分`、`Excel方案成分`、`新算法成分`、`新-Excel成分`、`Excel校核`、`新算法校核`；默认输出文件名更新为 `热卷成本效益测算20260613版_LP新算法_单源对比_20260617_成分结果.xlsx`。
+- 验证方式：新增 `tests/test_recalculate_lp_actual_aluminum.py`，先确认旧实现只生成 `LP新算法铝耗对比` 而缺少 `成分结果` sheet，再实现后通过；重新运行 `.venv-win\Scripts\python.exe tools\recalculate_lp_actual_aluminum.py --source "热卷成本效益测算20260613版（基础参数表）---发徐老师(3).xlsx"`，输出 328 行全部 LP 可行、旧 Excel 批准规则可行 292 行、不可行 35 行、输入异常 1 行，`成分结果` sheet 共 5248 条元素明细。
+- 防复发要求：以后凡是回算产物中存在“多元素压缩文本”的校核字段，如果用户需要复核或筛选，必须同步提供结构化明细 sheet；不要只在主表原因列里堆字符串。
+
 ### 2026-06-16 - 规则语义分散会让 Ti、低目标不投和模板覆盖在不同入口被绕过去
 
 - 问题现象：同一套业务规则分散在 `target_bounds_from_single_value()`、`effective_bounds()`、`nominal_target_value()`、`process_rule_alloy_upper_bound()`、batch 模板解析和单源回算脚本多个入口，结果是 `Ti +0.005` 在单值目标路径被绕掉，`Ni/Cu/Mo/Sb/B` 低目标不投也可能因为元素 bounds 被清空而丢失原始目标语义；模板 `07_工艺规则参数` 的数值也没有真正成为所有入口的统一事实源。

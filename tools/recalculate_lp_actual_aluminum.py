@@ -41,7 +41,7 @@ from app.solvers import get_solver
 
 
 SOURCE_WORKBOOK = ROOT / "热卷成本效益测算20260613版（基础参数表）---发徐老师(3).xlsx"
-DEFAULT_OUTPUT = ROOT / "outputs" / "lp_actual_aluminum" / "热卷成本效益测算20260613版_LP新算法_单源对比_20260615.xlsx"
+DEFAULT_OUTPUT = ROOT / "outputs" / "lp_actual_aluminum" / "热卷成本效益测算20260613版_LP新算法_单源对比_20260617_成分结果.xlsx"
 SOURCE_DATA_START_ROW = 5
 ALUMINUM_SOURCE_COLUMN = "AH"
 
@@ -336,6 +336,14 @@ def constraint_text(config: dict[str, Any]) -> str:
     return "; ".join(parts)
 
 
+def bounds_snapshot(config: dict[str, Any]) -> dict[str, dict[str, float | None]]:
+    return {
+        element: effective_bounds(config, element)
+        for element in TARGET_COLUMNS
+        if element not in IGNORED_TARGET_ELEMENTS
+    }
+
+
 def chemistry_text(checks: list[dict[str, Any]]) -> str:
     shown = []
     for check in checks:
@@ -564,6 +572,7 @@ def compute_rows(source_workbook_path: Path = SOURCE_WORKBOOK) -> tuple[list[dic
         new_cost: float | None = None
         new_auto_total: float | None = None
         new_auto_cost: float | None = None
+        new_chemistry: dict[str, float] | None = None
         new_chemistry_checks: list[dict[str, Any]] = []
 
         raw_solution = solver.solve_lp(build_linear_model(config, alloys).as_dict())
@@ -636,6 +645,8 @@ def compute_rows(source_workbook_path: Path = SOURCE_WORKBOOK) -> tuple[list[dic
             "目标": raw_targets,
             "终点C": config["residual"].get("C"),
             "终点Mn": config["residual"].get("Mn"),
+            "终点成分": dict(config["residual"]),
+            "成分边界": bounds_snapshot(config),
             "LP状态": status,
             "Excel结果状态": excel_result_status,
             "Excel是否满足批准规则": excel_rule_eval["status"],
@@ -665,6 +676,8 @@ def compute_rows(source_workbook_path: Path = SOURCE_WORKBOOK) -> tuple[list[dic
             "old_x": old_x,
             "old_raw_x": old_raw_x,
             "new_x": new_x,
+            "old_chemistry": old_chemistry,
+            "new_chemistry": new_chemistry,
         }
         rows.append(record)
 
@@ -776,6 +789,133 @@ def record_to_row(record: dict[str, Any], headers: list[str], alloys: list[dict[
         values[f"新算法_{name}kg/t"] = new_value
         values[f"差异_{name}kg/t"] = None if new_value is None or old_value is None else new_value - old_value
     return [values.get(header) for header in headers]
+
+
+def chemistry_status(value: float | None, bounds: dict[str, float | None] | None, *, missing_status: str = "空") -> str:
+    if value is None:
+        return missing_status
+    bounds = bounds or {"min": None, "max": None}
+    minimum = bounds.get("min")
+    maximum = bounds.get("max")
+    if minimum is None and maximum is None:
+        return "无约束"
+    if minimum is not None and value < minimum - 1e-8:
+        return "NG"
+    if maximum is not None and value > maximum + 1e-8:
+        return "NG"
+    return "OK"
+
+
+def write_composition_sheet(workbook: openpyxl.Workbook, rows: list[dict[str, Any]]) -> None:
+    sheet = workbook.create_sheet("成分结果")
+    headers = [
+        "Excel行号",
+        "炼钢牌号",
+        "元素",
+        "目标值",
+        "约束下限",
+        "约束上限",
+        "终点成分",
+        "Excel方案成分",
+        "新算法成分",
+        "新-Excel成分",
+        "Excel校核",
+        "新算法校核",
+        "LP状态",
+        "Excel是否满足批准规则",
+        "Excel不满足批准规则原因",
+        "LP目标约束",
+        "序号",
+        "适用牌号",
+        "钢种类型",
+    ]
+    for column_index, header in enumerate(headers, start=1):
+        cell = sheet.cell(1, column_index, header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="14532D")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    output_row = 2
+    for record in rows:
+        targets = record.get("目标") or {}
+        bounds_by_element = record.get("成分边界") or {}
+        residual = record.get("终点成分") or {}
+        old_chemistry = record.get("old_chemistry") or {}
+        new_chemistry = record.get("new_chemistry") or {}
+        for element in TARGET_COLUMNS:
+            if element in IGNORED_TARGET_ELEMENTS:
+                continue
+            bounds = bounds_by_element.get(element) or {"min": None, "max": None}
+            old_value = old_chemistry.get(element)
+            new_value = new_chemistry.get(element)
+            delta = None if old_value is None or new_value is None else new_value - old_value
+            row_values = [
+                record.get("Excel行号"),
+                record.get("炼钢牌号"),
+                element,
+                targets.get(element),
+                bounds.get("min"),
+                bounds.get("max"),
+                residual.get(element),
+                old_value,
+                new_value,
+                delta,
+                chemistry_status(old_value, bounds),
+                chemistry_status(new_value, bounds, missing_status="无解" if record.get("LP状态") != "ok" else "空"),
+                record.get("LP状态"),
+                record.get("Excel是否满足批准规则"),
+                record.get("Excel不满足批准规则原因"),
+                record.get("LP目标约束"),
+                record.get("序号"),
+                record.get("适用牌号"),
+                record.get("钢种类型"),
+            ]
+            for column_index, value in enumerate(row_values, start=1):
+                cell = sheet.cell(output_row, column_index, rounded(value) if isinstance(value, float) else value)
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+                if column_index in (11, 12):
+                    if value == "NG":
+                        cell.fill = PatternFill("solid", fgColor="FCA5A5")
+                    elif value == "OK":
+                        cell.fill = PatternFill("solid", fgColor="DCFCE7")
+                if column_index == 10 and isinstance(value, (int, float)):
+                    if value < -1e-8:
+                        cell.fill = PatternFill("solid", fgColor="DCFCE7")
+                    elif value > 1e-8:
+                        cell.fill = PatternFill("solid", fgColor="FEE2E2")
+            output_row += 1
+
+    if output_row > 2:
+        sheet.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{output_row - 1}"
+    sheet.freeze_panes = "A2"
+    widths = {
+        "A": 10,
+        "B": 16,
+        "C": 8,
+        "D": 10,
+        "E": 10,
+        "F": 10,
+        "G": 10,
+        "H": 13,
+        "I": 13,
+        "J": 13,
+        "K": 12,
+        "L": 12,
+        "M": 10,
+        "N": 18,
+        "O": 48,
+        "P": 44,
+        "Q": 9,
+        "R": 14,
+        "S": 14,
+    }
+    for letter, width in widths.items():
+        sheet.column_dimensions[letter].width = width
+    for row in sheet.iter_rows(min_row=2, max_row=output_row - 1, min_col=4, max_col=10):
+        for cell in row:
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = "0.000000"
+    sheet.row_dimensions[1].height = 32
 
 
 def write_workbook(rows: list[dict[str, Any]], details: list[dict[str, Any]], meta: dict[str, Any], output_path: Path) -> None:
@@ -899,6 +1039,7 @@ def write_workbook(rows: list[dict[str, Any]], details: list[dict[str, Any]], me
         sheet.row_dimensions[row_index].height = 32
     sheet.row_dimensions[header_row].height = 42
 
+    write_composition_sheet(workbook, rows)
     workbook.save(output_path)
 
 
