@@ -23,6 +23,14 @@
 
 ## 已记录问题
 
+### 2026-06-19 - 回算原因列不能硬编码控碳余量
+
+- 问题现象：`tools/recalculate_lp_actual_aluminum.py` 的回算原因列会显示 `C上限按目标...-0.005=...`，即使批量模板或配置已把 `carbon_target_margin` 改成其他值，结果说明仍像是固定扣 `0.005`。
+- 原因：规则引擎和边界计算已经读取 `process_rules.carbon_target_margin`，但解释文本仍保留早期默认值硬编码，导致“实际按自定义余量算、文字按默认余量讲”的审计错觉。
+- 修复办法：`explain_row()` 改为从 `compile_rule_view(config).resolved_rules_config["carbon_target_margin"]` 读取实际余量；新增规则引擎、批量模板和回算原因文本测试，覆盖 `carbon_target_margin=0.004` 时 `C目标=0.160 -> C上限=0.156`。
+- 验证方式：运行 `.venv-win\Scripts\python.exe -m pytest tests\test_rule_engine.py tests\test_batch_template.py::test_rule_sheet_overrides_batch_process_rules tests\test_recalculate_lp_actual_aluminum.py -q`。
+- 防复发要求：以后凡是结果 workbook、原因列、README 中展示规则阈值，必须从当前编译规则或配置读取，不允许把默认值写死在解释文本里。
+
 ### 2026-06-17 - 单源回算必须把成分结果导出为独立 sheet
 
 - 问题现象：`tools/recalculate_lp_actual_aluminum.py` 的主对比 sheet 已经有 `Excel原方案成分校核` 和 `新方案成分校核` 文本列，但这些列把所有元素压在一个字符串里，无法直接筛选某个元素，也不方便按 `Excel行号 + 元素` 逐条复核目标值、边界和新旧成分差。
@@ -60,7 +68,7 @@
 - 问题现象：当前 LP 规则里混有未拍板的隐式口径，例如单值目标自动上限余量、`Ti` 双加 `+0.005`、以及 batch 路径还会把 `V/Nb/Cr` 等终点残余直接带入计算，导致“LP 比 Excel 贵”时很难判断到底是批准规则更严，还是程序多收紧了边界。
 - 原因：规则编译分散在 `target_bounds_from_single_value()`、`effective_bounds()`、batch residual 构造和回算脚本多个入口；旧 Excel `AY:BJ` 只是解释层，但之前产物里没有直接标出“Excel 原方案在批准规则下是否可行”，导致成本差很容易被误判成求解器问题。
 - 修复办法：按用户拍板的 8 条规则和两个 `A` 方案做规则洁净化：`C/P/S` 单值按上限，`Si<=0.05` 按低杂质上限语义、`Si>0.05` 及其余常规单值目标按等值目标语义；`Ti` 只对非等值下限/范围在下限侧加一次 `+0.005`；去掉 `Mn/V/Nb/Cr/Ni/Cu/Mo/Sb/B` 的自动上限余量；batch residual 与回算脚本统一只扣 `C/Mn` 终点；新增 `07_工艺规则参数` 模板 sheet，让用户显式修改 `process_rules` 阈值；回算产物新增 `Excel是否满足批准规则`、`Excel原方案成分校核`、`Excel不满足批准规则原因` 三列，并在表头汇总可行/不可行计数。
-- 验证方式：`tests/test_batch_template.py` 与 `tests/test_backend_optimizer.py` 共 `64` 个测试全部通过，`node --test tests/ui_static.test.js` `24` 个测试全部通过；重新运行 `.venv-win\Scripts\python.exe tools\recalculate_lp_actual_aluminum.py` 后，正确版单源回算得到 `328` 行中 `328` 行 LP 可行、批准规则下旧 Excel 可行 `86` 行、不可行 `241` 行、输入异常 `1` 行；`X80M-1`、`X80M-2`、`X60M-2` 仍因 `C目标-0.005` 导致金属锰替代低碳锰铁而更贵，但现在会明确标出“原 Excel 在批准规则下不可行”。
+- 验证方式：`tests/test_batch_template.py` 与 `tests/test_backend_optimizer.py` 共 `64` 个测试全部通过，`node --test tests/ui_static.test.js` `24` 个测试全部通过；重新运行 `.venv-win\Scripts\python.exe tools\recalculate_lp_actual_aluminum.py` 后，正确版单源回算得到 `328` 行中 `328` 行 LP 可行、批准规则下旧 Excel 可行 `86` 行、不可行 `241` 行、输入异常 `1` 行；`X80M-1`、`X80M-2`、`X60M-2` 仍因当时默认 `carbon_target_margin=0.005` 导致金属锰替代低碳锰铁而更贵，但现在会明确标出“原 Excel 在批准规则下不可行”。
 - 防复发要求：以后所有规则改动必须同时更新核心求解、batch residual、模板规则 sheet、回算产物列和文档；不能再让“隐藏规则”只存在于代码。凡是 `LP > Excel` 的行，都必须先看 `Excel是否满足批准规则`，再讨论成本差是否异常。
 
 ### 2026-06-15 - 正确版 workbook 已统一维护铝耗和合金单价，回算不能再读外部表

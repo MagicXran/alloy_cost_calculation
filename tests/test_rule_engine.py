@@ -75,3 +75,15 @@ def test_compile_rule_view_preserves_low_trace_target_for_disable_check_without_
     assert "Ni" not in view.compiled_bounds
     assert "镍板" in view.disabled_alloys
     assert "低碳锰铁" not in view.disabled_alloys
+
+
+def test_compile_rule_view_uses_configured_carbon_target_margin():
+    config = make_config(
+        target_spec={"C": {"mode": "single", "value": 0.160}},
+        process_rules={"carbon_target_margin": 0.004},
+    )
+
+    view = compile_rule_view(config)
+
+    assert view.resolved_rules_config["carbon_target_margin"] == pytest.approx(0.004)
+    assert view.compiled_bounds["C"] == {"min": None, "max": pytest.approx(0.156)}

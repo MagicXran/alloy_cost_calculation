@@ -240,6 +240,8 @@ def test_rule_sheet_overrides_batch_process_rules():
     assert rules["ti_safety_addition"] == pytest.approx(0.006)
     assert rules["trace_alloy_thresholds"]["Ni"] == pytest.approx(0.018)
     assert rules["phosphorus_alloy_max"] == pytest.approx(0.045)
+    assert report["parsed"]["tasks"][0]["config"]["target"]["C"] == {"max": pytest.approx(0.156)}
+    assert effective_bounds(report["parsed"]["tasks"][0]["config"], "C") == {"min": None, "max": pytest.approx(0.156)}
 
 
 def test_non_element_target_headers_are_ignored():

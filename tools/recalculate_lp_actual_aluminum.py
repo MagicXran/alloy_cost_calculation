@@ -505,7 +505,8 @@ def explain_row(
     c_bounds = effective_bounds(config, "C")
     if c_bounds["max"] is not None:
         c_target = (config.get("raw_targets") or {}).get("C")
-        prefix = f"C上限按目标{c_target:.3f}-0.005={c_bounds['max']:.3f}"
+        carbon_margin = float(compile_rule_view(config).resolved_rules_config["carbon_target_margin"])
+        prefix = f"C上限按目标{c_target:.3f}-{carbon_margin:.3f}={c_bounds['max']:.3f}"
         if old_chemistry and old_chemistry.get("C", 0.0) > c_bounds["max"] + 1e-6:
             reasons.append(prefix + f"，原Excel按当前成分口径估算C={old_chemistry['C']:.3f}，会被新约束压住")
         else:
