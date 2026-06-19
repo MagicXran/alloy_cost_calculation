@@ -244,6 +244,25 @@ def test_rule_sheet_overrides_batch_process_rules():
     assert effective_bounds(report["parsed"]["tasks"][0]["config"], "C") == {"min": None, "max": pytest.approx(0.156)}
 
 
+def test_rule_sheet_enabled_false_disables_batch_process_rules():
+    report = parse_template_workbook(
+        workbook_bytes(
+            rule_rows=[
+                ["规则总开关", "enabled", "否", ""],
+                ["控碳余量", "carbon_target_margin", 0.004, ""],
+                ["铝块单独录入", "manual_aluminum", "是", ""],
+                ["Ti 安全余量", "ti_safety_addition", 0.006, ""],
+            ]
+        )
+    )
+
+    assert report["status"] == "ok"
+    config = report["parsed"]["tasks"][0]["config"]
+    assert config["process_rules"]["enabled"] is False
+    assert config["target"]["C"] == {"max": pytest.approx(0.160)}
+    assert effective_bounds(config, "C") == {"min": None, "max": pytest.approx(0.160)}
+
+
 def test_non_element_target_headers_are_ignored():
     report = parse_template_workbook(
         workbook_bytes(

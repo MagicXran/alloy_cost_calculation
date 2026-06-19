@@ -87,3 +87,47 @@ def test_compile_rule_view_uses_configured_carbon_target_margin():
 
     assert view.resolved_rules_config["carbon_target_margin"] == pytest.approx(0.004)
     assert view.compiled_bounds["C"] == {"min": None, "max": pytest.approx(0.156)}
+
+
+def test_process_rules_enabled_false_disables_all_field_rules():
+    alloys = [
+        {"name": "铝块", "price_per_ton": 22000, "max_add_kg_per_t": 5, "bag_size_kg": 0, "composition": {"Als": 99}},
+        {"name": "镍板", "price_per_ton": 130000, "max_add_kg_per_t": 5, "bag_size_kg": 0, "composition": {"Ni": 99}},
+        {"name": "硅锰", "price_per_ton": 5000, "max_add_kg_per_t": 30, "bag_size_kg": 0, "composition": {"Si": 17.69, "Mn": 65.66}},
+        {"name": "磷铁", "price_per_ton": 3000, "max_add_kg_per_t": 5, "bag_size_kg": 0, "composition": {"P": 23.94}},
+        {"name": "硫铁", "price_per_ton": 3000, "max_add_kg_per_t": 5, "bag_size_kg": 0, "composition": {"S": 29}},
+    ]
+    config = make_config(
+        target_spec={
+            "C": {"mode": "single", "value": 0.160},
+            "Si": {"mode": "single", "value": 0.040},
+            "Ti": {"mode": "single", "value": 0.025},
+            "Als": {"mode": "single", "value": 0.010},
+            "Ni": {"mode": "single", "value": 0.020},
+            "P": {"mode": "single", "value": 0.040},
+            "S": {"mode": "single", "value": 0.030},
+        },
+        process_rules={
+            "enabled": False,
+            "carbon_target_margin": 0.004,
+            "disable_silicon_alloys_si_max": 0.04,
+            "single_target_si_upper_only_max": 0.05,
+            "manual_aluminum": True,
+            "ti_safety_addition": 0.006,
+            "trace_alloy_thresholds": {"Ni": 0.02},
+            "phosphorus_alloy_max": 0.04,
+            "sulfur_alloy_max": 0.03,
+        },
+        alloys=alloys,
+    )
+
+    view = compile_rule_view(config)
+
+    assert view.compiled_bounds["C"] == {"min": None, "max": pytest.approx(0.160)}
+    assert view.compiled_bounds["Si"] == {"min": pytest.approx(0.040), "max": pytest.approx(0.040)}
+    assert view.compiled_bounds["Ti"] == {"min": pytest.approx(0.025), "max": pytest.approx(0.025)}
+    assert view.compiled_bounds["Als"] == {"min": pytest.approx(0.010), "max": pytest.approx(0.010)}
+    assert view.compiled_bounds["Ni"] == {"min": pytest.approx(0.020), "max": pytest.approx(0.020)}
+    assert view.compiled_bounds["P"] == {"min": None, "max": pytest.approx(0.040)}
+    assert view.compiled_bounds["S"] == {"min": None, "max": pytest.approx(0.030)}
+    assert view.disabled_alloys == {}

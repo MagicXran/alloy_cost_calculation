@@ -184,6 +184,10 @@ class RulePlugin(Protocol):
         ...
 
 
+def process_rules_are_enabled(ctx: RuleContext) -> bool:
+    return ctx.resolved_rules_config.get("enabled") is not False
+
+
 @dataclass(frozen=True)
 class CompiledRuleView:
     target_spec: dict[str, dict[str, Any]]
@@ -214,6 +218,8 @@ class RuleEngine:
 
     def run(self, ctx: RuleContext) -> RuleContext:
         for plugin in self._plugins:
+            if not process_rules_are_enabled(ctx) and not getattr(plugin, "run_when_process_rules_disabled", False):
+                continue
             plugin.apply(ctx)
         return ctx
 
@@ -222,6 +228,7 @@ class EmptyOrZeroTargetRule:
     rule_id = "empty-or-zero-target"
     phase = "normalize"
     priority = 10
+    run_when_process_rules_disabled = True
 
     def apply(self, ctx: RuleContext) -> None:
         for element, spec in list(ctx.target_spec.items()):
@@ -249,6 +256,7 @@ class NominalTargetRule:
     rule_id = "nominal-target"
     phase = "compile_target"
     priority = 5
+    run_when_process_rules_disabled = True
 
     def apply(self, ctx: RuleContext) -> None:
         ctx.nominal_targets = {}
@@ -279,6 +287,7 @@ class LegacyRangeTargetRule:
     rule_id = "legacy-range-target"
     phase = "compile_target"
     priority = 10
+    run_when_process_rules_disabled = True
 
     def apply(self, ctx: RuleContext) -> None:
         margins = ctx.raw_config.get("safety_margins") or {}
@@ -295,6 +304,27 @@ class LegacyRangeTargetRule:
             if compiled["min"] is not None or compiled["max"] is not None:
                 ctx.compiled_bounds[element] = compiled
                 ctx.add_flag(element, "range")
+
+
+class BasicSingleTargetRule:
+    rule_id = "basic-single-target"
+    phase = "compile_target"
+    priority = 11
+    run_when_process_rules_disabled = True
+
+    def apply(self, ctx: RuleContext) -> None:
+        for element, spec in ctx.target_spec.items():
+            if spec.get("mode") != "single":
+                continue
+            value = _float_or_none(spec.get("value"))
+            if value is None:
+                continue
+            if element in {"C", "P", "S"}:
+                ctx.compiled_bounds[element] = {"min": None, "max": value}
+                ctx.add_flag(element, "upper-only")
+            else:
+                ctx.compiled_bounds[element] = {"min": value, "max": value}
+                ctx.add_flag(element, "exact")
 
 
 class CarbonMarginRule:
@@ -548,6 +578,7 @@ def default_rule_plugins() -> list[RulePlugin]:
         EmptyOrZeroTargetRule(),
         NominalTargetRule(),
         LegacyRangeTargetRule(),
+        BasicSingleTargetRule(),
         CarbonMarginRule(),
         PhosphorusSulfurUpperOnlyRule(),
         LowSiliconUpperOnlyRule(),

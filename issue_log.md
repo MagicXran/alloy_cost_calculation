@@ -23,6 +23,14 @@
 
 ## 已记录问题
 
+### 2026-06-19 - 工艺规则总开关必须真正关闭所有现场规则
+
+- 问题现象：批量模板 `07_工艺规则参数` 中 `enabled=否` 后，合金禁投上限不再执行，但 `C目标-carbon_target_margin`、低 Si 上限语义、`Ti + ti_safety_addition`、铝目标移除、微量元素目标移除等边界编译规则仍会继续生效，导致“总开关”只关了一半。
+- 原因：`process_rule_alloy_upper_bound()` 会检查 `process_rules.enabled`，但 `compile_rule_view()` 里的目标边界插件没有检查总开关；规则引擎缺少基础目标规则和现场工艺插件的分层。
+- 修复办法：在规则引擎中新增基础单值目标规则；`enabled=false` 时只运行空/0 归一化、名义目标、旧区间目标和基础单值目标规则，跳过所有现场工艺插件。这样 `C/P/S` 单值仍按上限，其余单值按等值，但不再扣 C 余量、加 Ti 余量、禁投合金或移除铝/微量元素目标。
+- 验证方式：新增 `tests/test_rule_engine.py::test_process_rules_enabled_false_disables_all_field_rules` 和 `tests/test_batch_template.py::test_rule_sheet_enabled_false_disables_batch_process_rules`，并运行 `.venv-win\Scripts\python.exe -m pytest tests\test_backend_optimizer.py tests\test_batch_template.py tests\test_rule_engine.py -q`。
+- 防复发要求：以后新增现场工艺插件时，必须明确它是否受 `process_rules.enabled` 控制；默认现场规则必须受总开关控制，只有基础目标解释规则可以在总开关关闭时继续运行。
+
 ### 2026-06-19 - 回算原因列不能硬编码控碳余量
 
 - 问题现象：`tools/recalculate_lp_actual_aluminum.py` 的回算原因列会显示 `C上限按目标...-0.005=...`，即使批量模板或配置已把 `carbon_target_margin` 改成其他值，结果说明仍像是固定扣 `0.005`。
