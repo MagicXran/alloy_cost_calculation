@@ -55,7 +55,7 @@ http://127.0.0.1:8017/prototype.html
 - 元素增量公式是 `kg/t * 合金元素百分数 * 回收率 / 1000`。
 - 控元素和现场确认规则集中在 `app/core.py` 的 `effective_bounds()`、`process_rules()`、`process_rule_alloy_upper_bound()`。
 - 批量模板单值目标转换在 `app/batch_template.py`，但 LP 工艺修正必须在核心边界层统一生效。
-- 铝块当前按 `process_rules.manual_aluminum` 单独维护，不参与 LP 自动优化；涉及正确版实际铝耗对比时必须从当前单源 workbook 的 `1.合金成本!AH` 取值再单独计入成本和消耗。
+- 铝块当前按 `process_rules.manual_aluminum` 单独维护，不参与 LP 自动优化；涉及正确版实际铝耗对比时必须从当前单源 workbook 的 `1.合金成本!AH` 取值作为审计记录，但不得计入新算法最终合金成本和最终合金消耗。
 - 做 workbook 规则审计时，先读真实 Excel 的 sheet/cell/formula/cache 值，再改代码或生成结论；当前正确版回算不得再默认读取外部铝耗表或外部价格表。
 - `mem/` 是本地记忆目录，默认忽略，不作为项目交付内容。
 
