@@ -69,3 +69,4 @@ http://127.0.0.1:8017/prototype.html
 - 每次修改业务逻辑、算法规则、模板结构、页面交互或生成脚本，都要同步更新 `readme.md` 与 `issue_log.md`。
 - `readme.md` 说明项目需求、目标、开发环境、约束、技术架构、运行方式和功能逻辑。
 - `issue_log.md` 用中文记录问题现象、原因、修复办法、验证方式、防复发要求。
+- 项目总的实施方案按照 D:/Nercar/DIY/collecter/docs/superpowers/specs/2026-06-11-windows-knowledge-collector-design.md 来实施,期间要是我们有新的逻辑变更,需要及时更新此文档.
