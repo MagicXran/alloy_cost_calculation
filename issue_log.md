@@ -23,6 +23,14 @@
 
 ## 已记录问题
 
+### 2026-06-30 - 批量 API 必须支持逐炉手工铝块计入总成本
+
+- 问题现象：用正确版 workbook 填批量模板后，API 导出与 `tools/recalculate_lp_actual_aluminum.py` 的 LP 自动投料在不含铝口径下一致，但和后台脚本“含 AH 铝块”的总成本/总消耗不一致，容易被误判为 API 计算错误。
+- 原因：`process_rules.manual_aluminum=true` 时铝块不参与 LP 自动优化；后台回算脚本会从源 workbook `1.合金成本!AH` 额外加回实际铝块，而批量模板/API 之前没有逐炉手工铝块输入字段，导出只能给出不含手工铝块的自动方案。
+- 修复办法：在 `01_批量任务` 增加可选列 `手工铝块kg/t`，解析后写入任务级 `manualAluminum`；若该值大于 0，则按当前价格方案下铝块物料价格计算手工铝块成本。批量导出新增自动成本/自动消耗、手工铝块成本/用量、总成本/总消耗列，并在最优路线明细中追加“手工录入”的铝块行；LP 自动求解变量仍保持禁用铝块，不改变成分约束。
+- 验证方式：新增 `tests/test_batch_template.py::test_parse_template_workbook_preserves_manual_aluminum_for_batch_totals` 和 `tests/test_batch_template.py::test_export_batch_result_adds_manual_aluminum_to_totals_and_route_details`，先确认旧实现失败，再实现后通过；重新生成 `alloy-batch-template-v1.xlsx` 并通过批量模板一致性测试。
+- 防复发要求：以后比较 API 导出和单源回算时必须明确口径：自动 LP 口径看 `自动吨钢成本/自动合金消耗kg/t`，含现场铝块口径看 `总吨钢成本/总合金消耗kg/t`。凡是新增手工维护物料，都必须在模板字段、预检、导出汇总和路线明细中同时体现。
+
 ### 2026-06-19 - 工艺规则总开关必须真正关闭所有现场规则
 
 - 问题现象：批量模板 `07_工艺规则参数` 中 `enabled=否` 后，合金禁投上限不再执行，但 `C目标-carbon_target_margin`、低 Si 上限语义、`Ti + ti_safety_addition`、铝目标移除、微量元素目标移除等边界编译规则仍会继续生效，导致“总开关”只关了一半。

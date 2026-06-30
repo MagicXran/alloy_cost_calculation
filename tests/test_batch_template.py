@@ -17,6 +17,7 @@ def workbook_bytes(
     duplicate_target: bool = False,
     merge_tasks: bool = False,
     formula_price: bool = False,
+    task_header: list[str] | None = None,
     task_rows: list[list] | None = None,
     target_header: list[str] | None = None,
     target_rows: list[list] | None = None,
@@ -24,6 +25,7 @@ def workbook_bytes(
     endpoint_rows: list[list] | None = None,
     alloy_header: list[str] | None = None,
     alloy_rows: list[list] | None = None,
+    price_rows: list[list] | None = None,
     rule_rows: list[list] | None = None,
 ) -> bytes:
     """Build a minimal user-facing upload template in memory."""
@@ -32,7 +34,7 @@ def workbook_bytes(
     wb.remove(wb.active)
 
     tasks = wb.create_sheet("01_批量任务")
-    tasks.append(["任务编号", "适用牌号", "厚度mm", "炉重t", "价格方案", "炼钢牌号", "备注"])
+    tasks.append(task_header or ["任务编号", "适用牌号", "厚度mm", "炉重t", "价格方案", "炼钢牌号", "备注"])
     for row in task_rows or [
         ["T001", "Q235B", 10, 150, "2026-05", "Q235B-1", "正常样例"],
         ["T002", "Q355C", 8, 150, "2026-05", "Q355C-1", "低合金样例"],
@@ -111,9 +113,12 @@ def workbook_bytes(
 
     prices = wb.create_sheet("05_价格表")
     prices.append(["价格方案", "物料名称", "价格日期", "价格元每吨"])
-    prices.append(["2026-05", "硅锰", "2026-05-07", 6130])
-    prices.append(["2026-05", "硅铁", "2026-05-07", 5810])
-    prices.append(["2026-05", "低碳锰铁", "2026-05-07", 10150])
+    for row in price_rows or [
+        ["2026-05", "硅锰", "2026-05-07", 6130],
+        ["2026-05", "硅铁", "2026-05-07", 5810],
+        ["2026-05", "低碳锰铁", "2026-05-07", 10150],
+    ]:
+        prices.append(row)
     if formula_price:
         prices["D2"] = "=6000+130"
 
@@ -140,6 +145,43 @@ def test_parse_template_workbook_builds_prevalidated_payload():
     assert report["preview"]["alloyCount"] == 3
     assert "N" not in report["parsed"]["tasks"][0]["config"]["target"]
     assert report["parsed"]["tasks"][0]["config"]["residual"]["Si"] == 0
+
+
+def test_parse_template_workbook_preserves_manual_aluminum_for_batch_totals():
+    report = parse_template_workbook(
+        workbook_bytes(
+            task_header=["任务编号", "适用牌号", "厚度mm", "炉重t", "价格方案", "炼钢牌号", "手工铝块kg/t", "备注"],
+            task_rows=[
+                ["T001", "Q235B", 10, 150, "2026-05", "Q235B-1", 1.25, "源表 AH"],
+                ["T002", "Q355C", 8, 150, "2026-05", "Q355C-1", None, "未录入时按 0"],
+            ],
+            alloy_header=["合金名称", "价格物料名", "启用", "投料方式", "袋重kg", "最大投加kg每t", *TEMPLATE_ELEMENTS, "备注"],
+            alloy_rows=[
+                ["硅锰", "硅锰", "是", "连续", 0, 30, 1.72, 17.69, 65.66, 0.15, 0.02, None, None, None, None, None, None, None, None, None, None, None, None, ""],
+                ["硅铁", "硅铁", "是", "连续", 0, 20, 0.2, 72.23, None, 0.03, 0.02, None, None, None, None, None, None, None, None, None, None, None, None, ""],
+                ["低碳锰铁", "低碳锰铁", "是", "整袋", 25, 25, 0.64, None, 81.19, 0.20, 0.02, None, None, None, None, None, None, None, None, None, None, None, None, ""],
+                ["铝块", "铝块", "是", "连续", 0, 10, None, None, None, 0, 0, None, None, 99, 99, None, None, None, None, None, None, None, None, "手工铝块单独计入"],
+            ],
+            price_rows=[
+                ["2026-05", "硅锰", "2026-05-07", 6130],
+                ["2026-05", "硅铁", "2026-05-07", 5810],
+                ["2026-05", "低碳锰铁", "2026-05-07", 10150],
+                ["2026-05", "铝块", "2026-05-07", 22000],
+            ],
+        )
+    )
+
+    assert report["status"] == "ok"
+    assert report["parsed"]["tasks"][0]["manualAluminum"] == {
+        "kgPerTon": pytest.approx(1.25),
+        "pricePerTon": pytest.approx(22000),
+        "materialName": "铝块",
+    }
+    assert report["parsed"]["tasks"][1]["manualAluminum"] == {
+        "kgPerTon": 0,
+        "pricePerTon": 0,
+        "materialName": "",
+    }
 
 
 def test_single_target_values_follow_confirmed_exact_target_semantics_without_hidden_margins():
@@ -890,3 +932,51 @@ def test_export_route_details_filters_and_sorts_by_cost_without_addition_sequenc
         (2, "A合金", 20, "连续"),
         (3, "B合金", 20, "整袋"),
     ]
+
+
+def test_export_batch_result_adds_manual_aluminum_to_totals_and_route_details():
+    content = export_batch_result(
+        {
+            "results": [
+                {
+                    "status": "ok",
+                    "input": {
+                        "taskId": "T001",
+                        "grade": "Q235B",
+                        "thicknessMm": 10,
+                        "manualAluminum": {"kgPerTon": 1.5, "pricePerTon": 22000, "materialName": "铝块"},
+                        "config": {"heat_weight_t": 150},
+                    },
+                    "result": {
+                        "modes": {
+                            "milp": {
+                                "costPerTon": 100,
+                                "heatCost": 15000,
+                                "totalKgPerTon": 2,
+                                "alloys": [
+                                    {"name": "A合金", "kgPerTon": 2.0, "heatKg": 300, "bags": 0, "costPerTon": 100, "sequence": 1, "feedMode": "连续"},
+                                ],
+                                "chemistryChecks": [],
+                            }
+                        },
+                        "warnings": [],
+                    },
+                }
+            ]
+        }
+    )
+    workbook = openpyxl.load_workbook(BytesIO(content), data_only=True)
+    summary = workbook["批量计算汇总"]
+    details = workbook["最优路线明细"]
+    summary_header = [cell.value for cell in summary[1]]
+    summary_row = dict(zip(summary_header, [cell.value for cell in summary[2]]))
+    detail_rows = [row for row in details.iter_rows(min_row=2, values_only=True)]
+
+    assert summary_row["自动合金消耗kg/t"] == pytest.approx(2)
+    assert summary_row["手工铝块kg/t"] == pytest.approx(1.5)
+    assert summary_row["总合金消耗kg/t"] == pytest.approx(3.5)
+    assert summary_row["自动吨钢成本"] == pytest.approx(100)
+    assert summary_row["手工铝块成本元/t"] == pytest.approx(33)
+    assert summary_row["总吨钢成本"] == pytest.approx(133)
+    assert summary_row["炉次总成本"] == pytest.approx(19950)
+    assert ("T001", 2, "铝块", 1.5, 225, None, 33, "手工录入") in detail_rows

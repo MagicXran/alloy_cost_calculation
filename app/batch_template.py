@@ -23,6 +23,8 @@ ERROR_FIELD_ELEMENTS = ["P", "S"] + [element for element in TEMPLATE_ELEMENTS if
 TARGET_IGNORED_ELEMENTS = {"Ca"}
 FIXED_RECOVERY_RATES = {"Als": 0.15, "Alt": 0.15}
 FIELD_CONFIRMED_RECOVERY_OVERRIDES = {("26MNB5", "Si"): 0.8}
+MANUAL_ALUMINUM_FIELD = "手工铝块kg/t"
+ALUMINUM_ALIASES = ("铝块", "铝粒", "铝锭", "铝线")
 BUSINESS_SHEETS = [
     "01_批量任务",
     "02_目标成分上下限",
@@ -80,11 +82,11 @@ def generate_template_workbook(process_rules: dict | None = None) -> bytes:
         workbook,
         "01_批量任务",
         [
-            ["任务编号", "适用牌号", "厚度mm", "炉重t", "价格方案", "炼钢牌号", "备注"],
-            ["T001", "Q235B", 10, 150, "2026-05", "Q235B-1", "正常样例，可复制新增任务"],
-            ["T002", "Q355C", 8, 150, "2026-05", "Q355C-1", "批量任务互不影响"],
+            ["任务编号", "适用牌号", "厚度mm", "炉重t", "价格方案", "炼钢牌号", MANUAL_ALUMINUM_FIELD, "备注"],
+            ["T001", "Q235B", 10, 150, "2026-05", "Q235B-1", None, "正常样例，可复制新增任务"],
+            ["T002", "Q355C", 8, 150, "2026-05", "Q355C-1", None, "批量任务互不影响"],
         ],
-        {"A": 16, "B": 14, "C": 12, "D": 12, "E": 14, "F": 16, "G": 28},
+        {"A": 16, "B": 14, "C": 12, "D": 12, "E": 14, "F": 16, "G": 16, "H": 28},
     )
     create_sheet(
         workbook,
@@ -118,6 +120,7 @@ def generate_template_workbook(process_rules: dict | None = None) -> bytes:
             ["硅铁", "硅铁", "是", "连续", 0, 20, *element_values({"C": 0.20, "Si": 72.23, "P": 0.03, "S": 0.02}), ""],
             ["高碳铬铁", "高碳铬铁", "是", "连续", 0, 20, *element_values({"C": 10.00, "P": 0.03, "S": 0.04, "Cr": 52.00}), ""],
             ["低碳铬铁", "低碳铬铁", "是", "连续", 0, 20, *element_values({"C": 0.12, "P": 0.03, "S": 0.03, "Cr": 59.44}), ""],
+            ["铝块", "铝块", "是", "连续", 0, 10, *element_values({"P": 0.00, "S": 0.00, "Als": 99.00, "Alt": 99.00}), "手工铝块按 01_批量任务 的手工铝块kg/t 单独计入，不参与 LP 自动优化。"],
         ],
         {"A": 14, "B": 14, "C": 10, "D": 12, "E": 10, "F": 16, "W": 28},
     )
@@ -133,6 +136,7 @@ def generate_template_workbook(process_rules: dict | None = None) -> bytes:
             ["2026-05", "硅铁", "2026-05-07", 4973],
             ["2026-05", "高碳铬铁", "2026-05-07", 7699],
             ["2026-05", "低碳铬铁", "2026-05-07", 14956],
+            ["2026-05", "铝块", "2026-05-07", 22337],
         ],
         {"A": 14, "B": 14, "C": 14, "D": 14},
     )
@@ -145,6 +149,7 @@ def generate_template_workbook(process_rules: dict | None = None) -> bytes:
             ["单位规则", "成分按百分数数值填写，例如 0.23 表示 0.23%；合金品位 65.66 表示 65.66%。"],
             ["外部单值规则", "目标成分表使用 元素目标 单值列：空值或 0 表示不约束；C/P/S 按上限控制；Si<=低硅阈值时只做低杂质控制、按上限处理；Ni/Cu/Mo/Sb<=对应阈值、B<=对应阈值时可留空或直接视为不投；其余元素单值目标按精确值控制。旧的 元素下限/元素上限 上传列仍兼容。"],
             ["现场工艺规则", "以 07_工艺规则参数 sheet 为准：当前批准规则包括 C目标-余量、Si<=阈值禁硅、金属锰兜底、铝块按现场单独录入、Ti 单值=目标+余量、Ti 区间下限+余量、Ni/Cu/Mo/Sb/B 低目标禁投、P/S 低目标禁投磷硫铁。"],
+            ["手工铝块", "01_批量任务 可填写 手工铝块kg/t；该值不参与 LP 自动优化，只在批量导出时按铝块价格单独计入总合金消耗和总吨钢成本。空值或 0 表示本炉不单独计入铝块。"],
             ["合金用量公式", "kg/t = (目标成分 - 有效终点成分) / 合金品位 / 回收率 * 1000；当前批量链路只使用 C/Mn 终点扣减，V/Nb/Ti/Cr 等不做终点残余扣减；26MnB5 的 Si 回收率若录成 0 会按现场确认值 0.8 修正。"],
             ["标准元素", "标准模板仅保留 C, Si, Mn, P, S, V, Nb, Ti, Als, Alt, Ca, Cr, Ni, Cu, Mo, B, Sb；旧模板里的 N 上传时会被忽略。"],
             ["P/S 规则", "P/S 通常只填写上限；转炉终点已超过上限时任务直接失败。"],
@@ -399,6 +404,7 @@ def build_parsed_template(rows_by_sheet: dict[str, list[dict]], errors: list[dic
             errors.append(make_issue("04_合金成分库", None, "启用", "NO_ENABLED_ALLOYS", "没有可参与计算的启用合金。", "请至少启用一种合金并配置价格。"))
             continue
 
+        manual_aluminum = manual_aluminum_for_task(task, alloy_rows, price_map, errors)
         target_spec = deepcopy(target["targetSpec"])
         residual = build_residual(target_spec, endpoint["residual"], config_alloys)
         recovery_rates = build_recovery_rates(target_spec, endpoint["recoveryRates"], endpoint.get("row"), config_alloys, errors)
@@ -418,6 +424,7 @@ def build_parsed_template(rows_by_sheet: dict[str, list[dict]], errors: list[dic
                 "thicknessMm": task["thicknessMm"],
                 "priceScheme": task["priceScheme"],
                 "row": task["row"],
+                "manualAluminum": manual_aluminum,
                 "config": {
                     "heat_weight_t": task["heatWeightT"],
                     "steel_weight_kg": 1000,
@@ -438,6 +445,52 @@ def build_parsed_template(rows_by_sheet: dict[str, list[dict]], errors: list[dic
     if errors:
         return {}
     return {"templateVersion": TEMPLATE_VERSION, "tasks": parsed_tasks, "alloys": alloy_rows, "prices": prices, "processRules": process_rules}
+
+
+def manual_aluminum_for_task(task: dict, alloy_rows: list[dict], price_map: dict[tuple[str, str], dict], errors: list[dict]) -> dict:
+    """返回逐炉手工铝块计入信息；空值兼容旧模板。"""
+
+    kg_per_ton = float(task.get("manualAluminumKgPerT") or 0)
+    if kg_per_ton <= 0:
+        return {"kgPerTon": 0, "pricePerTon": 0, "materialName": ""}
+
+    alloy = next((item for item in alloy_rows if is_aluminum_name(item.get("name", ""))), None)
+    material_name = (alloy or {}).get("priceMaterialName") or "铝块"
+    price = price_map.get((task["priceScheme"], material_name))
+    if price is None:
+        errors.append(
+            make_issue(
+                "05_价格表",
+                None,
+                "价格元每吨",
+                "MANUAL_ALUMINUM_PRICE_NOT_FOUND",
+                f"任务 {task['taskId']} 填写了手工铝块kg/t，但价格方案 {task['priceScheme']} 下找不到铝块物料 {material_name} 的价格。",
+                "请在价格表补充铝块价格，或把手工铝块kg/t 留空/填 0。",
+            )
+        )
+        return {"kgPerTon": kg_per_ton, "pricePerTon": 0, "materialName": material_name}
+    return {"kgPerTon": kg_per_ton, "pricePerTon": price["pricePerTon"], "materialName": material_name}
+
+
+def normalized_manual_aluminum(value: dict | None) -> dict:
+    """规范化预检产物里的手工铝块对象，兼容旧 payload。"""
+
+    if not isinstance(value, dict):
+        return {"kgPerTon": 0.0, "pricePerTon": 0.0, "materialName": ""}
+    return {
+        "kgPerTon": float(value.get("kgPerTon") or 0),
+        "pricePerTon": float(value.get("pricePerTon") or 0),
+        "materialName": optional_text(value.get("materialName")) or "",
+    }
+
+
+def manual_aluminum_cost_per_ton(manual_aluminum: dict) -> float:
+    return float(manual_aluminum.get("kgPerTon") or 0) * float(manual_aluminum.get("pricePerTon") or 0) / 1000
+
+
+def is_aluminum_name(name: str) -> bool:
+    normalized = str(name or "").replace(" ", "")
+    return any(alias in normalized for alias in ALUMINUM_ALIASES)
 
 
 def parse_process_rules_rows(rows: list[dict], errors: list[dict]) -> dict:
@@ -544,6 +597,8 @@ def validate_prechecked_template(parsed_template: dict) -> list[dict]:
         if missing or not isinstance(task.get("config"), dict):
             missing_text = "、".join(missing or ["config"])
             raise ValueError(f"template 数据无效：第 {index} 个任务缺少 {missing_text}，请先调用 /api/template/validate 并提交返回的 parsed。")
+        if "manualAluminum" in task and not isinstance(task.get("manualAluminum"), dict):
+            raise ValueError(f"template 数据无效：第 {index} 个任务的 manualAluminum 类型错误，请先调用 /api/template/validate 并提交返回的 parsed。")
         validate_prechecked_config(task["config"], index)
     return tasks
 
@@ -581,7 +636,22 @@ def export_batch_result(batch_result: dict) -> bytes:
     issues = workbook.create_sheet("错误与警告")
     rule_sheet = workbook.create_sheet("规则参数")
 
-    summary.append(["任务编号", "牌号", "厚度mm", "状态", "最优吨钢成本", "炉次成本", "失败原因"])
+    summary.append(
+        [
+            "任务编号",
+            "牌号",
+            "厚度mm",
+            "状态",
+            "自动吨钢成本",
+            "手工铝块成本元/t",
+            "总吨钢成本",
+            "自动合金消耗kg/t",
+            "手工铝块kg/t",
+            "总合金消耗kg/t",
+            "炉次总成本",
+            "失败原因",
+        ]
+    )
     details.append(["任务编号", "路线序号", "合金", "kg/t", "炉次kg", "袋数", "成本贡献", "投料方式"])
     chemistry.append(["任务编号", "元素", "最终值", "下限", "上限", "是否合格"])
     issues.append(["任务编号", "类型", "sheet", "行号", "字段", "code", "message", "suggestion"])
@@ -603,20 +673,41 @@ def export_batch_result(batch_result: dict) -> bytes:
         task = item["input"]
         if item["status"] == "ok":
             mode = item["result"]["modes"]["milp"]
-            summary.append([task["taskId"], task["grade"], task["thicknessMm"], "成功", mode["costPerTon"], mode["heatCost"], ""])
+            manual_aluminum = normalized_manual_aluminum(task.get("manualAluminum"))
+            heat_weight = float((task.get("config") or {}).get("heat_weight_t") or item["result"].get("heatWeightT") or 0)
+            auto_cost = float(mode.get("costPerTon") or 0)
+            auto_kg = float(mode.get("totalKgPerTon") or 0)
+            manual_kg = manual_aluminum["kgPerTon"]
+            manual_cost = manual_aluminum_cost_per_ton(manual_aluminum)
+            total_cost = auto_cost + manual_cost
+            total_kg = auto_kg + manual_kg
+            summary.append([task["taskId"], task["grade"], task["thicknessMm"], "成功", auto_cost, manual_cost, total_cost, auto_kg, manual_kg, total_kg, total_cost * heat_weight, ""])
             feed_modes = {alloy["name"]: alloy.get("feed_mode") for alloy in task.get("config", {}).get("alloys", [])}
             routed_alloys = [alloy for alloy in mode["alloys"] if float(alloy.get("kgPerTon") or 0) > 1e-8]
             routed_alloys.sort(key=lambda alloy: (-float(alloy.get("costPerTon") or 0), str(alloy.get("name") or "")))
             for route_index, alloy in enumerate(routed_alloys, 1):
                 feed_mode = alloy.get("feedMode") or alloy.get("feed_mode") or feed_modes.get(alloy["name"]) or ""
                 details.append([task["taskId"], route_index, alloy["name"], alloy["kgPerTon"], alloy["heatKg"], alloy["bags"], alloy["costPerTon"], feed_mode])
+            if manual_kg > 1e-8:
+                details.append(
+                    [
+                        task["taskId"],
+                        len(routed_alloys) + 1,
+                        manual_aluminum["materialName"] or "铝块",
+                        manual_kg,
+                        manual_kg * heat_weight,
+                        None,
+                        manual_cost,
+                        "手工录入",
+                    ]
+                )
             for check in mode["chemistryChecks"]:
                 chemistry.append([task["taskId"], check["element"], check["value"], check["min"], check["max"], "是" if check["ok"] else "否"])
             for warning in item["result"].get("warnings") or []:
                 issues.append([task["taskId"], "warning", "", "", "", "OPTIMIZER_WARNING", warning, "人工确认后执行。"])
         else:
             message = "；".join(error["message"] for error in item.get("errors") or [])
-            summary.append([task["taskId"], task["grade"], task["thicknessMm"], "失败", None, None, message])
+            summary.append([task["taskId"], task["grade"], task["thicknessMm"], "失败", None, None, None, None, None, None, None, message])
             for error in item.get("errors") or []:
                 issues.append([task["taskId"], "error", error.get("sheet"), error.get("row"), error.get("field"), error.get("code"), error.get("message"), error.get("suggestion")])
 
@@ -648,6 +739,7 @@ def parse_task_rows(rows: list[dict], errors: list[dict]) -> list[dict]:
                 "heatWeightT": required_number(row, "炉重t", "01_批量任务", errors, minimum=0),
                 "priceScheme": required_text(row, "价格方案", "01_批量任务", errors),
                 "steelmakingGrade": required_text(row, "炼钢牌号", "01_批量任务", errors),
+                "manualAluminumKgPerT": optional_number(row.get(MANUAL_ALUMINUM_FIELD), "01_批量任务", row["_row"], MANUAL_ALUMINUM_FIELD, errors, minimum=0, maximum=50, allow_zero=True) or 0,
                 "notes": optional_text(row.get("备注")) or "",
             }
         )
