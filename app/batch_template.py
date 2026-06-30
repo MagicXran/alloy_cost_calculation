@@ -120,7 +120,7 @@ def generate_template_workbook(process_rules: dict | None = None) -> bytes:
             ["硅铁", "硅铁", "是", "连续", 0, 20, *element_values({"C": 0.20, "Si": 72.23, "P": 0.03, "S": 0.02}), ""],
             ["高碳铬铁", "高碳铬铁", "是", "连续", 0, 20, *element_values({"C": 10.00, "P": 0.03, "S": 0.04, "Cr": 52.00}), ""],
             ["低碳铬铁", "低碳铬铁", "是", "连续", 0, 20, *element_values({"C": 0.12, "P": 0.03, "S": 0.03, "Cr": 59.44}), ""],
-            ["铝块", "铝块", "是", "连续", 0, 10, *element_values({"P": 0.00, "S": 0.00, "Als": 99.00, "Alt": 99.00}), "手工铝块按 01_批量任务 的手工铝块kg/t 单独计入，不参与 LP 自动优化。"],
+            ["铝块", "铝块", "是", "连续", 0, 10, *element_values({"P": 0.00, "S": 0.00, "Als": 99.00, "Alt": 99.00}), "手工铝块按 01_批量任务 的手工铝块kg/t 单独记录，不参与 LP 自动优化，也不计入最终合金成本和消耗。"],
         ],
         {"A": 14, "B": 14, "C": 10, "D": 12, "E": 10, "F": 16, "W": 28},
     )
@@ -149,7 +149,7 @@ def generate_template_workbook(process_rules: dict | None = None) -> bytes:
             ["单位规则", "成分按百分数数值填写，例如 0.23 表示 0.23%；合金品位 65.66 表示 65.66%。"],
             ["外部单值规则", "目标成分表使用 元素目标 单值列：空值或 0 表示不约束；C/P/S 按上限控制；Si<=低硅阈值时只做低杂质控制、按上限处理；Ni/Cu/Mo/Sb<=对应阈值、B<=对应阈值时可留空或直接视为不投；其余元素单值目标按精确值控制。旧的 元素下限/元素上限 上传列仍兼容。"],
             ["现场工艺规则", "以 07_工艺规则参数 sheet 为准：当前批准规则包括 C目标-余量、Si<=阈值禁硅、金属锰兜底、铝块按现场单独录入、Ti 单值=目标+余量、Ti 区间下限+余量、Ni/Cu/Mo/Sb/B 低目标禁投、P/S 低目标禁投磷硫铁。"],
-            ["手工铝块", "01_批量任务 可填写 手工铝块kg/t；该值不参与 LP 自动优化，只在批量导出时按铝块价格单独计入总合金消耗和总吨钢成本。空值或 0 表示本炉不单独计入铝块。"],
+            ["手工铝块", "01_批量任务 可填写 手工铝块kg/t；该值不参与 LP 自动优化，也不计入最终合金成本和合金消耗。空值或 0 表示本炉没有手工铝块记录。"],
             ["合金用量公式", "kg/t = (目标成分 - 有效终点成分) / 合金品位 / 回收率 * 1000；当前批量链路只使用 C/Mn 终点扣减，V/Nb/Ti/Cr 等不做终点残余扣减；26MnB5 的 Si 回收率若录成 0 会按现场确认值 0.8 修正。"],
             ["标准元素", "标准模板仅保留 C, Si, Mn, P, S, V, Nb, Ti, Als, Alt, Ca, Cr, Ni, Cu, Mo, B, Sb；旧模板里的 N 上传时会被忽略。"],
             ["P/S 规则", "P/S 通常只填写上限；转炉终点已超过上限时任务直接失败。"],
@@ -448,7 +448,7 @@ def build_parsed_template(rows_by_sheet: dict[str, list[dict]], errors: list[dic
 
 
 def manual_aluminum_for_task(task: dict, alloy_rows: list[dict], price_map: dict[tuple[str, str], dict], errors: list[dict]) -> dict:
-    """返回逐炉手工铝块计入信息；空值兼容旧模板。"""
+    """返回逐炉手工铝块记录信息；空值兼容旧模板。"""
 
     kg_per_ton = float(task.get("manualAluminumKgPerT") or 0)
     if kg_per_ton <= 0:
@@ -679,8 +679,8 @@ def export_batch_result(batch_result: dict) -> bytes:
             auto_kg = float(mode.get("totalKgPerTon") or 0)
             manual_kg = manual_aluminum["kgPerTon"]
             manual_cost = manual_aluminum_cost_per_ton(manual_aluminum)
-            total_cost = auto_cost + manual_cost
-            total_kg = auto_kg + manual_kg
+            total_cost = auto_cost
+            total_kg = auto_kg
             summary.append([task["taskId"], task["grade"], task["thicknessMm"], "成功", auto_cost, manual_cost, total_cost, auto_kg, manual_kg, total_kg, total_cost * heat_weight, ""])
             feed_modes = {alloy["name"]: alloy.get("feed_mode") for alloy in task.get("config", {}).get("alloys", [])}
             routed_alloys = [alloy for alloy in mode["alloys"] if float(alloy.get("kgPerTon") or 0) > 1e-8]

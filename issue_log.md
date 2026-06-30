@@ -23,13 +23,21 @@
 
 ## 已记录问题
 
-### 2026-06-30 - 批量 API 必须支持逐炉手工铝块计入总成本
+### 2026-06-30 - manual_aluminum=true 时铝块不得计入最终成本和消耗
+
+- 问题现象：批量导出和单源回算曾把手工铝块/AH 铝耗作为单独维护物料重新叠加到 `总吨钢成本`、`总合金消耗kg/t`、`新算法合金成本元/t`、`新算法合金消耗kg/t`，与最新确认的 `manual_aluminum=true` 语义冲突。
+- 原因：上一轮为了对齐“含 AH 铝块”的现场总量，把铝块从 LP 自动变量中禁用后又在结果汇总层加回，混淆了“现场记录值”和“模型最终合金成本/消耗”两个口径。
+- 修复办法：`tools/recalculate_lp_actual_aluminum.py` 保留 `1.合金成本!AH` 作为审计记录，但新算法 `new_x` 中铝块固定为 `0`，新算法总耗/总成本只看 LP 自动口径；`app.batch_template.export_batch_result()` 保留 `手工铝块kg/t`、参考成本和“手工录入”明细，但 `总吨钢成本`、`总合金消耗kg/t`、`炉次总成本` 不再叠加铝块。
+- 验证方式：新增/更新 `tests/test_recalculate_lp_actual_aluminum.py::test_recalculation_reason_records_manual_aluminum_without_counting_it`、`tests/test_batch_template.py::test_export_batch_result_records_manual_aluminum_without_adding_to_totals`，并运行后端/前端相关测试。
+- 防复发要求：`manual_aluminum=true` 的硬口径是 Al/Als/Alt 不进目标约束、不进 LP 自动优化、不进最终合金成本、不进最终合金消耗；若需要展示 AH 或手工铝块，只能作为记录、参考成本或审计明细，不得汇入总口径。
+
+### 2026-06-30 - 旧口径：批量 API 曾支持逐炉手工铝块计入总成本
 
 - 问题现象：用正确版 workbook 填批量模板后，API 导出与 `tools/recalculate_lp_actual_aluminum.py` 的 LP 自动投料在不含铝口径下一致，但和后台脚本“含 AH 铝块”的总成本/总消耗不一致，容易被误判为 API 计算错误。
 - 原因：`process_rules.manual_aluminum=true` 时铝块不参与 LP 自动优化；后台回算脚本会从源 workbook `1.合金成本!AH` 额外加回实际铝块，而批量模板/API 之前没有逐炉手工铝块输入字段，导出只能给出不含手工铝块的自动方案。
 - 修复办法：在 `01_批量任务` 增加可选列 `手工铝块kg/t`，解析后写入任务级 `manualAluminum`；若该值大于 0，则按当前价格方案下铝块物料价格计算手工铝块成本。批量导出新增自动成本/自动消耗、手工铝块成本/用量、总成本/总消耗列，并在最优路线明细中追加“手工录入”的铝块行；LP 自动求解变量仍保持禁用铝块，不改变成分约束。
 - 验证方式：新增 `tests/test_batch_template.py::test_parse_template_workbook_preserves_manual_aluminum_for_batch_totals` 和 `tests/test_batch_template.py::test_export_batch_result_adds_manual_aluminum_to_totals_and_route_details`，先确认旧实现失败，再实现后通过；重新生成 `alloy-batch-template-v1.xlsx` 并通过批量模板一致性测试。
-- 防复发要求：以后比较 API 导出和单源回算时必须明确口径：自动 LP 口径看 `自动吨钢成本/自动合金消耗kg/t`，含现场铝块口径看 `总吨钢成本/总合金消耗kg/t`。凡是新增手工维护物料，都必须在模板字段、预检、导出汇总和路线明细中同时体现。
+- 防复发要求：本条已被 2026-06-30 的 `manual_aluminum=true` 口径修正覆盖；以后比较 API 导出和单源回算时必须明确口径：最终总成本/总消耗只看不含铝的自动 LP/MILP 口径，手工铝块只能作为记录或参考明细。凡是新增手工维护物料，都必须先确认是否允许进入最终汇总。
 
 ### 2026-06-19 - 工艺规则总开关必须真正关闭所有现场规则
 
@@ -91,7 +99,7 @@
 
 - 问题现象：用户确认 `热卷成本效益测算20260613版（基础参数表）---发徐老师(3).xlsx` 是当前正确版本，铝耗和合金单价都已维护在该文件内；旧脚本仍硬编码读取 `合金计算.xlsx` 和外部 `副本4.铝耗分析(1).xlsx`，且固定只循环到第 327 行，会漏掉正确版新增到第 332 行的尾部数据。
 - 原因：上一版脚本是为“旧合金计算表 + 外部铝耗表”临时审计场景写的，没有把数据源口径抽成参数，也没有按 `F列炼钢牌号` 动态识别有效数据行。正确版 workbook 的 `1.合金成本!AB4:AU4` 已是单价来源，`1.合金成本!AH` 已是逐行铝块用量，再走外部匹配会制造错误来源。
-- 修复办法：把 `tools/recalculate_lp_actual_aluminum.py` 改为单源读取，默认源文件为正确版 workbook，并支持 `--source` 指定同结构文件；按 `1.合金成本!F` 动态识别第 5 到 332 行共 328 条数据；合金单价从 `AB4:AU4` 读取；铝块按同源 `AH` 固定计入新方案；输出表新增源表审计状态和提示，复算 `AV/AW` 并标记负投料等异常。
+- 修复办法：把 `tools/recalculate_lp_actual_aluminum.py` 改为单源读取，默认源文件为正确版 workbook，并支持 `--source` 指定同结构文件；按 `1.合金成本!F` 动态识别第 5 到 332 行共 328 条数据；合金单价从 `AB4:AU4` 读取；铝块按同源 `AH` 固定计入新方案这一旧口径已在 2026-06-30 被修正为“只记录不计入新算法总耗/总成本”；输出表新增源表审计状态和提示，复算 `AV/AW` 并标记负投料等异常。
 - 验证方式：运行 `.venv-win\Scripts\python.exe tools\recalculate_lp_actual_aluminum.py`，输出 328 行全部 LP 可行、Excel 原结果错误 0、AH 铝耗缺失 0、源表审计提示 1 行；回读 `outputs/lp_actual_aluminum/热卷成本效益测算20260613版_LP新算法_单源对比_20260615.xlsx`，确认 `LP新算法铝耗对比` 无公式错误，且第 229 行 `800L-1` 的 `硅锰=-1.413228 kg/t` 被标为源表审计警告。
 - 防复发要求：以后正确版 workbook 回算只认一个源文件，不得再默认读取外部铝耗/价格 Excel；行范围必须由真实数据列动态识别，不能写死旧行号；源表公式缓存即使没有 `#DIV/0!`，也要审计负投料、`AV/AW` 复算和行级牌号对齐。
 
@@ -99,7 +107,7 @@
 
 - 问题现象：回算 `合金计算.xlsx` 时，用户口径要求从铝耗文件 `F列炼钢牌号` 和 `AP 实际铝铝耗` 匹配；实际打开 `副本4.铝耗分析(1).xlsx` 后发现 `铝耗` sheet 只使用到 `AF`，`AF1=实际铝铝耗`，`AP` 为空/未使用。首次严格建模时，`26MnB5` 因原表 `Si回收率=0` 被误判为 Si 无法补足。
 - 原因：铝耗 workbook 的实际列位与口头列名不一致；同时当前项目的批量解析已经有现场确认修正规则 `26MNB5` 的 `Si=0` 按 `0.8` 处理，直接从旧 workbook 抽值会绕过这条新算法规则。后续复查又发现 `26MnB5` 原 Excel `AV133/AW133` 本身是 `#DIV/0!`，不能把错误值当 0 去算 `新-Excel` 差值。
-- 修复办法：新增 `tools/recalculate_lp_actual_aluminum.py`，回算时明确读取 `铝耗!F` 和 `铝耗!AF`，在输出表中写明 AP/AF 差异；铝块不进入 LP 自动优化，匹配到的实际铝耗单独计入新方案总耗和成本；构建回收率时复用 `FIELD_CONFIRMED_RECOVERY_OVERRIDES`，使 `26MnB5` 的 Si 回收率按 `0.8` 修正；原 Excel `AV/AW` 为错误值时，输出 `Excel结果状态`，差值留空，并从有效可比汇总中排除。
+- 修复办法：新增 `tools/recalculate_lp_actual_aluminum.py`，回算时明确读取 `铝耗!F` 和 `铝耗!AF`，在输出表中写明 AP/AF 差异；铝块不进入 LP 自动优化，匹配到的实际铝耗单独计入新方案总耗和成本这一旧口径已在 2026-06-30 被修正为“只记录不计入新算法总耗/总成本”；构建回收率时复用 `FIELD_CONFIRMED_RECOVERY_OVERRIDES`，使 `26MnB5` 的 Si 回收率按 `0.8` 修正；原 Excel `AV/AW` 为错误值时，输出 `Excel结果状态`，差值留空，并从有效可比汇总中排除。
 - 验证方式：运行 `.venv-win\Scripts\python.exe tools\recalculate_lp_actual_aluminum.py --output outputs\lp_actual_aluminum\合金计算_LP新算法_实际铝耗对比_修正版_20260613.xlsx`，输出 323 行全部 LP 可行、Excel 原结果错误 1、铝耗缺失 0；回读生成 workbook，确认 `26MnB5` 的 `新-Excel成本元/t` 为空且原因列记录 `AV/AW=#DIV/0!`。
 - 防复发要求：以后处理现场 Excel 时，不要按用户口头列号直接取数；必须先搜索表头并给出实际 sheet/cell。凡是绕过模板解析直接建模的脚本，都必须显式复用项目已有的现场修正规则；原 Excel 缓存值为错误时必须标注不可比，不能静默转成 0。
 

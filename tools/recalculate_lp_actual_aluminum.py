@@ -107,9 +107,8 @@ IGNORED_TARGET_ELEMENTS = {"Ca", "N"}
 SKIPPED_ALLOYS = {"稀土合金"}
 
 # Composition values are the explicit constants used by the legacy workbook
-# formula columns. Aluminum stays in the alloy list, but its LP variable is
-# fixed to the same workbook's AH column because current process_rules mark it
-# as manually maintained.
+# formula columns. Aluminum stays in the alloy list for source audit, but
+# manual_aluminum=true keeps it out of the LP result totals.
 ALLOY_COMPOSITIONS = {
     "硅锰": {"C": 1.72, "Si": 17.69, "Mn": 65.66},
     "高碳锰铁": {"C": 6.69, "Mn": 74.60},
@@ -487,10 +486,10 @@ def explain_row(
     actual_al = aluminum.value or 0.0
     if abs(actual_al - old_al) > 1e-6:
         reasons.append(
-            f"铝块按同源AH维护：原Excel AH={old_al:.3f}kg/t，{aluminum.source_column}{aluminum.source_row}={actual_al:.3f}kg/t，差{format_delta(actual_al - old_al)}kg/t"
+            f"铝块仅按同源AH记录不计入新算法汇总：原Excel AH={old_al:.3f}kg/t，{aluminum.source_column}{aluminum.source_row}={actual_al:.3f}kg/t，差{format_delta(actual_al - old_al)}kg/t"
         )
     else:
-        reasons.append(f"铝块按同源AH列固定计入：{actual_al:.3f}kg/t")
+        reasons.append(f"铝块仅按同源AH列记录不计入新算法汇总：{actual_al:.3f}kg/t")
 
     if audit_notes:
         reasons.append("源表审计提示：" + "；".join(audit_notes[:3]))
@@ -586,8 +585,8 @@ def compute_rows(source_workbook_path: Path = SOURCE_WORKBOOK) -> tuple[list[dic
             new_x = list(new_auto_x)
             for index, alloy in enumerate(alloys):
                 if alloy["name"] == "铝块":
-                    new_x[index] = aluminum.value or 0.0
                     new_auto_x[index] = 0.0
+                    new_x[index] = 0.0
             new_total = sum(new_x)
             new_cost = cost_for(alloys, new_x)
             new_auto_total = sum(new_auto_x)
@@ -945,7 +944,7 @@ def write_workbook(rows: list[dict[str, Any]], details: list[dict[str, Any]], me
             f"{source_workbook.name}!1.合金成本 第{source_row_range}行, AB4:AU4单价, AH列铝块；炼钢参数表 第{source_row_range}行",
             "本次不读取外部铝耗表或合金价格表，所有输入来自同一个 workbook。",
         ),
-        ("LP口径", "当前 app.core + rules_engine + target_spec", "铝块 manual_aluminum，不参与LP自动优化；新方案固定使用同源 AH 铝块值计入总耗和成本。"),
+        ("LP口径", "当前 app.core + rules_engine + target_spec", "铝块 manual_aluminum，不参与LP自动优化；同源 AH 铝块只作记录，不计入新算法总耗和成本。"),
         (
             "行数",
             summary["total"],

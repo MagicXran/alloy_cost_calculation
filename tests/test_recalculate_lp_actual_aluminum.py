@@ -173,3 +173,49 @@ def test_recalculation_reason_uses_configured_carbon_margin():
 
     assert "C上限按目标0.160-0.004=0.156" in reason
     assert "0.005" not in reason
+
+
+def test_recalculation_reason_records_manual_aluminum_without_counting_it():
+    config = {
+        "raw_targets": {},
+        "target_spec": {},
+        "target": {},
+        "process_rules": {
+            "carbon_target_margin": 0.004,
+            "disable_silicon_alloys_si_max": 0.04,
+            "single_target_si_upper_only_max": 0.05,
+            "manual_aluminum": True,
+            "ti_safety_addition": 0.005,
+            "trace_alloy_thresholds": {"Ni": 0.02, "Cu": 0.02, "Mo": 0.02, "Sb": 0.02, "B": 0.0002},
+            "phosphorus_alloy_max": 0.04,
+            "sulfur_alloy_max": 0.03,
+        },
+        "control_targets": {"enabled": False, "margin": 0, "elements": {}},
+        "safety_margins": {},
+        "alloys": [
+            {"name": "铝块", "price_per_ton": 22000, "max_add_kg_per_t": 5, "bag_size_kg": 0, "composition": {"Als": 99}},
+        ],
+    }
+
+    reason = explain_row(
+        "ok",
+        "SPHC",
+        config,
+        config["alloys"],
+        [0.0],
+        [0.0],
+        {},
+        "是",
+        [],
+        10.0,
+        10.0,
+        1.0,
+        10.0,
+        AluminumMatch(value=1.25, source_column="1.合金成本!AH", source_row=5, method="同一工作簿AH列", warning=""),
+        [],
+        [],
+        [],
+    )
+
+    assert "仅按同源AH记录不计入新算法汇总" in reason
+    assert "固定计入" not in reason

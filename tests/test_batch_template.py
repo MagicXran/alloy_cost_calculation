@@ -147,7 +147,7 @@ def test_parse_template_workbook_builds_prevalidated_payload():
     assert report["parsed"]["tasks"][0]["config"]["residual"]["Si"] == 0
 
 
-def test_parse_template_workbook_preserves_manual_aluminum_for_batch_totals():
+def test_parse_template_workbook_preserves_manual_aluminum_as_reference_record():
     report = parse_template_workbook(
         workbook_bytes(
             task_header=["任务编号", "适用牌号", "厚度mm", "炉重t", "价格方案", "炼钢牌号", "手工铝块kg/t", "备注"],
@@ -160,7 +160,7 @@ def test_parse_template_workbook_preserves_manual_aluminum_for_batch_totals():
                 ["硅锰", "硅锰", "是", "连续", 0, 30, 1.72, 17.69, 65.66, 0.15, 0.02, None, None, None, None, None, None, None, None, None, None, None, None, ""],
                 ["硅铁", "硅铁", "是", "连续", 0, 20, 0.2, 72.23, None, 0.03, 0.02, None, None, None, None, None, None, None, None, None, None, None, None, ""],
                 ["低碳锰铁", "低碳锰铁", "是", "整袋", 25, 25, 0.64, None, 81.19, 0.20, 0.02, None, None, None, None, None, None, None, None, None, None, None, None, ""],
-                ["铝块", "铝块", "是", "连续", 0, 10, None, None, None, 0, 0, None, None, 99, 99, None, None, None, None, None, None, None, None, "手工铝块单独计入"],
+                ["铝块", "铝块", "是", "连续", 0, 10, None, None, None, 0, 0, None, None, 99, 99, None, None, None, None, None, None, None, None, "手工铝块单独记录"],
             ],
             price_rows=[
                 ["2026-05", "硅锰", "2026-05-07", 6130],
@@ -934,7 +934,7 @@ def test_export_route_details_filters_and_sorts_by_cost_without_addition_sequenc
     ]
 
 
-def test_export_batch_result_adds_manual_aluminum_to_totals_and_route_details():
+def test_export_batch_result_records_manual_aluminum_without_adding_to_totals():
     content = export_batch_result(
         {
             "results": [
@@ -974,9 +974,9 @@ def test_export_batch_result_adds_manual_aluminum_to_totals_and_route_details():
 
     assert summary_row["自动合金消耗kg/t"] == pytest.approx(2)
     assert summary_row["手工铝块kg/t"] == pytest.approx(1.5)
-    assert summary_row["总合金消耗kg/t"] == pytest.approx(3.5)
+    assert summary_row["总合金消耗kg/t"] == pytest.approx(2)
     assert summary_row["自动吨钢成本"] == pytest.approx(100)
     assert summary_row["手工铝块成本元/t"] == pytest.approx(33)
-    assert summary_row["总吨钢成本"] == pytest.approx(133)
-    assert summary_row["炉次总成本"] == pytest.approx(19950)
+    assert summary_row["总吨钢成本"] == pytest.approx(100)
+    assert summary_row["炉次总成本"] == pytest.approx(15000)
     assert ("T001", 2, "铝块", 1.5, 225, None, 33, "手工录入") in detail_rows
