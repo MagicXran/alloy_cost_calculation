@@ -1,0 +1,50 @@
+{
+  "rows_compared": 328,
+  "api_success_rows": 328,
+  "recalc_ok_rows": 328,
+  "api_warning_rows": 1837,
+  "api_issue_type_counts": {
+    "warning": 1837
+  },
+  "api_issue_code_counts": {
+    "OPTIMIZER_WARNING": 1837
+  },
+  "top_api_warning_messages": [
+    [
+      "P/S 含量按配置值计算；若来自默认行业值，正式使用前必须用化验单覆盖。",
+      328
+    ],
+    [
+      "规则基线是系统按保守规则生成的对照方案，不等于现场历史真实投料。",
+      328
+    ],
+    [
+      "全部启用合金均为连续投料，没有整数袋变量，MILP 已退化为 LP；此时两列一致是正常结果。",
+      328
+    ],
+    [
+      "温降估算 V1 禁用，避免输出未校准的假精度。",
+      328
+    ],
+    [
+      "钛铁 LP 结果 0.90 kg/t 为极小量，现场可考虑忽略或改用 MILP。",
+      35
+    ]
+  ],
+  "auto_cost_mismatch_count": 0,
+  "auto_kg_mismatch_count": 0,
+  "non_aluminum_alloy_mismatch_count": 0,
+  "max_abs_auto_cost_delta": 4.988301043340471e-07,
+  "max_abs_auto_kg_delta": 4.971756943916716e-07,
+  "max_abs_non_aluminum_alloy_delta": 0,
+  "api_auto_cost_total": 55346.16785008849,
+  "recalc_auto_cost_total": 55346.167844,
+  "api_auto_kg_total": 4844.409525868195,
+  "recalc_auto_kg_total": 4844.409512,
+  "recalc_with_ah_cost_total": 67699.872281,
+  "recalc_with_ah_kg_total": 5397.465496,
+  "ah_kg_total": 553.055977,
+  "api_minus_recalc_with_ah_cost_total": -12353.70443091151,
+  "api_minus_recalc_with_ah_kg_total": -553.0559701318051,
+  "tolerance": 1e-06
+}
